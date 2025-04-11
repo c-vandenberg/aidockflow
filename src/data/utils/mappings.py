@@ -18,7 +18,7 @@ def pdb_to_uniprot_id_mapping(pdb_id: str) -> Optional[str]:
 
     Examples
     --------
-    >>> lookup_uniprot_from_pdb("1A2B")
+    >>> pdb_to_uniprot_id_mapping("1A2B")
     'P12345'
     """
     pdb_id = pdb_id.lower()

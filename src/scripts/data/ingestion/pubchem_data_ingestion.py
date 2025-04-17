@@ -47,7 +47,7 @@ def parse_arguments():
         '--script_log_path',
         type=str,
         required=True,
-        default='var/log/preprocessed/pubchem/data_ingestion.log',
+        default='../var/log/preprocessed/pubchem/data_ingestion.log',
         help='Path log file.'
     )
 
@@ -69,3 +69,6 @@ def main():
         smiles=pubchem_bioactives,
         logger=logger
     )
+
+if __name__ == "__main__":
+    main()

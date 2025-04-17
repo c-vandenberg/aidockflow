@@ -69,3 +69,6 @@ def main():
         smiles=pubchem_bioactives,
         logger=logger
     )
+
+if __name__ == "__main__":
+    main()

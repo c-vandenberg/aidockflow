@@ -4,10 +4,14 @@ from typing import List, Iterator, Optional
 
 import pubchempy as pcp
 
+from constants import RestApiEndpoints
+
 def get_active_aids(target_gene_id: str) -> List[str]:
     """Query PubChem to get assay IDs for a given target GeneID."""
-    url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/assay/target/geneid/{target_gene_id}/aids/JSON"
-    response = requests.get(url, timeout=10)
+    assay_id_url = RestApiEndpoints.PUBCHEM_ASSAYS_IDS_FROM_GENE_ID.url(
+        target_gene_id=target_gene_id
+    )
+    response = requests.get(assay_id_url, timeout=10)
     response.raise_for_status()
     data = response.json()
 
@@ -26,8 +30,8 @@ def get_active_aids_wrapper(target_gene_id: str, logger: logging.Logger) -> List
 
 def get_active_cids(aid: str) -> List[int]:
     """Query PubChem assay details to get active compound IDs for a given assay ID."""
-    url = f"https://pubchem.ncbi.nlm.nih.gov/rest/pug/assay/aid/{aid}/cids/JSON"
-    response = requests.get(url, timeout=10)
+    compound_id_url = RestApiEndpoints.PUBCHEM_COMPOUND_ID_FROM_ASSAY_ID.url(aid=aid)
+    response = requests.get(compound_id_url, timeout=10)
     response.raise_for_status()
     data = response.json()
 
@@ -119,9 +123,9 @@ def get_compound_potency(
         The potency value if available, otherwise None.
     """
     cid = compound.cid
-    pubchem_bioassay_url = f'https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/assaysummary/JSON'
+    assay_summary_url =  RestApiEndpoints.PUBCHEM_ASSAY_SUMMARY_FROM_CID.url(cid=cid)
     try:
-        response = requests.get(pubchem_bioassay_url, timeout=10)
+        response = requests.get(assay_summary_url, timeout=10)
         response.raise_for_status()
         response_json = response.json()
 

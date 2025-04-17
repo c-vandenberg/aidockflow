@@ -11,12 +11,12 @@ import pubchempy as pcp
 from click.core import batch
 from pubchempy import request
 
+from constants import RestApiEndpoints
 from data.utils.logging_utils import configure_logger
 from data.utils.mappings import uniprot_to_gene_id_mapping
 from data.utils.pubchem_api import (get_active_aids, get_active_cids,
                                     get_active_cids_wrapper, get_compounds_in_batches,
                                     batch_iterable, get_compound_potency)
-from rdkit.RDLogger import logger
 
 
 class BioactivityExtractorInterface(ABC):
@@ -102,35 +102,64 @@ class ChEMBLExtractor(BioactivityExtractorInterface):
         ValueError
             If no matching target is found for the provided UniProt accession.
         """
-        # Search for the target by name and retrieve the first matching result
+        # 1) Search for the target by UniProt ID and retrieve the first matching result
         target_results = self._client.target.filter(target_components__accession=target_uniprot_id)
         if not target_results:
-            raise ValueError(f"No matching target found for UniProt ID {target_uniprot_id}")
+            self._logger.error(f"No matching target found for UniProt ID {target_uniprot_id}")
+            return []
 
         target_data = target_results[0]
         target_id = target_data['target_chembl_id']
 
-        # Filter activities based on the specified standard type (e.g. IC50)
-        bioactive_compounds = self._client.activity.filter(
-            target_chembl_id=target_id,
-            standard_type=self._bioactivity_measure
-        )
+        # 2) Build the base parameters for ChEMBL REST API.
+        #    Filter activities based on the specified standard type (e.g. IC50)
+        params = {
+            "target_chembl_id": target_id,
+            "standard_type": self._bioactivity_measure,
+        }
+
+        # 2.1) Add threshold value to params if set
+        if self._bioactivity_threshold is not None:
+            # standard_value__lte is the ChEMBL REST parameter for “≤”
+            params["standard_value__lte"] = self._bioactivity_threshold
+
+        # 2.2) Paginate REST API requests
+        limit: int = 1000
+        offset: int = 0
+        chembl_activity_url: str = RestApiEndpoints.CHEMBL_ACTIVITY.url()
         bioactive_smiles: List = []
-        for compound in bioactive_compounds:
-            compound_smiles: str = compound.get('canonical_smiles')
+        chembl_start = time.time()
 
-            if not compound_smiles:
-                continue
+        while True:
+            page_params = {
+                **params,
+                "limit": limit,
+                "offset": offset,
+                "fields": "canonical_smiles"
+            }
 
-            try:
-                bioactivity_value = float(compound.get('standard_value', 0))
-            except (ValueError, TypeError):
-                continue
+            chembl_activity_request = requests.get(
+                chembl_activity_url,
+                params=page_params,
+                timeout=15
+            )
 
-            if not self._bioactivity_threshold:
-                bioactive_smiles.append(compound_smiles)
-            elif self._bioactivity_threshold and bioactivity_value <= self._bioactivity_threshold:
-                bioactive_smiles.append(compound_smiles)
+            chembl_activity_request.raise_for_status()
+            activity_data = chembl_activity_request.json()
+
+            records = activity_data.get('activities', [])
+            if not records:
+                break
+
+            for record in records:
+                smiles = record.get('canonical_smiles')
+                if smiles:
+                    bioactive_smiles.append(smiles)
+
+            offset += limit
+
+        chembl_end = time.time()
+        self._logger.info(f'ChEMBL Total Query Time: {round(chembl_end - chembl_start)} seconds')
 
         return bioactive_smiles
 

@@ -69,16 +69,16 @@ class ChEMBLExtractor(BioactivityExtractorInterface):
     def __init__(
         self,
         client = None,
-        bioactivity_threshold: Optional[float] = None, # In nM (e.g. 1000 nM threshold to filter for compounds with IC50 <= 1 µM)
-        bioactivity_measure: str = 'IC50',
+        bioactivity_measure: str = 'Kd',
+        bioactivity_threshold: Optional[float] = None, # In nM (e.g. 1000 nM threshold to filter for compounds with Kd <= 1 µM)
         logger: Optional[logging.Logger] = None
     ):
         if client is None:
             self._client = new_client
         else:
             self._client = client
-        self._bioactivity_threshold = bioactivity_threshold
         self._bioactivity_measure = bioactivity_measure
+        self._bioactivity_threshold = bioactivity_threshold
         self._logger = logger if logger else logging.getLogger(__name__)
 
     def get_bioactive_compounds(self, target_uniprot_id: str) -> List[str]:
@@ -116,6 +116,7 @@ class ChEMBLExtractor(BioactivityExtractorInterface):
         params = {
             "target_chembl_id": target_id,
             "standard_type": self._bioactivity_measure,
+            "standard_units": "nM"
         }
 
         # 2.1) Add threshold value to params if set
@@ -184,9 +185,11 @@ class PubChemExtractor(BioactivityExtractorInterface):
     """
     def __init__(
         self,
-        bioactivity_threshold: Optional[float] = None, # In nM (e.g. 1000 nM threshold to filter for compounds with IC50 <= 1 µM)
+        bioactivity_measure: str = 'Kd',
+        bioactivity_threshold: Optional[float] = None, # In nM (e.g. 1000 nM threshold to filter for compounds with Kd <= 1 µM)
         logger: Optional[logging.Logger] = None
     ):
+        self._bioactivity_measure = bioactivity_measure
         self._bioactivity_threshold = bioactivity_threshold
         self._logger = logger if logger else logging.getLogger(__name__)
 
@@ -309,38 +312,9 @@ class PubChemExtractor(BioactivityExtractorInterface):
 
             return bioactive_smiles
 
-
-    @staticmethod
-    def _lookup_target_gene_id(target: str) -> Optional[str]:
+    def _get_compound_potency(self, compound: pcp.Compound, target_gene_id: str) -> Optional[float]:
         """
-        Look up the target gene identifier (GeneID) for the given UniProt accession by
-        using the UniProt ID mapping API.
-
-        Parameters
-        ----------
-        target : str
-            The UniProt accession (e.g., "P00533").
-
-        Returns
-        -------
-        Optional[str]
-            The corresponding NCBI GeneID if found, otherwise None.
-        """
-        return uniprot_to_gene_id_mapping(target)
-
-    @staticmethod
-    def _get_bioactive_compound_potency(
-        compound: pcp.Compound,
-        target_gene_id: str,
-        logger: logging.Logger = None
-    ) -> Optional[float]:
-        return get_compound_potency(compound=compound, target_gene_id=target_gene_id)
-
-
-    @staticmethod
-    def _get_compound_potency(compound: pcp.Compound, target_gene_id: str) -> Optional[float]:
-        """
-        Retrieve a potency value (e.g., IC50 in nM) for a compound by querying the
+        Retrieve a potency value (e.g., Kd in nM) for a compound by querying the
         PubChem bioassay endpoint.
 
         Parameters
@@ -388,7 +362,7 @@ class PubChemExtractor(BioactivityExtractorInterface):
                 row_activity_name = row_cell[activity_name_idx]
                 if str(row_target_gene).strip() != str(target_gene_id).strip():
                     continue
-                if row_activity_name.strip().upper() != "IC50":
+                if row_activity_name.strip().upper() != self._bioactivity_measure:
                     continue
 
                 # Extract the activity value (in µM) and convert it to nM
@@ -407,3 +381,34 @@ class PubChemExtractor(BioactivityExtractorInterface):
             return None
 
         return None
+
+    @staticmethod
+    def _lookup_target_gene_id(target: str) -> Optional[str]:
+        """
+        Look up the target gene identifier (GeneID) for the given UniProt accession by
+        using the UniProt ID mapping API.
+
+        Parameters
+        ----------
+        target : str
+            The UniProt accession (e.g., "P00533").
+
+        Returns
+        -------
+        Optional[str]
+            The corresponding NCBI GeneID if found, otherwise None.
+        """
+        return uniprot_to_gene_id_mapping(target)
+
+    def _get_bioactive_compound_potency(
+        self,
+        compound: pcp.Compound,
+        target_gene_id: str,
+        logger: logging.Logger = None
+    ) -> Optional[float]:
+        return get_compound_potency(
+            compound=compound,
+            target_gene_id=target_gene_id,
+            bioactivity_measure=self._bioactivity_measure,
+            logger=logger
+        )

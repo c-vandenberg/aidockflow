@@ -106,10 +106,11 @@ def get_compounds_in_batches(
 def get_compound_potency(
     compound: pcp.Compound,
     target_gene_id: str,
+    bioactivity_measure: str,
     logger: logging.Logger = None
 ) -> Optional[float]:
     """
-    Retrieve a potency value (e.g., IC50 in nM) for a compound by querying the
+    Retrieve a potency value (e.g., Kd in nM) for a compound by querying the
     PubChem bioassay endpoint.
 
     Parameters
@@ -144,7 +145,7 @@ def get_compound_potency(
             activity_name_idx = columns_list.index('Activity Name')
             activity_value_idx = columns_list.index('Activity Value [uM]')
         except ValueError as e:
-            print(f'Column not found in bioassay data: {e}')
+            logger.error(f'Column not found in bioassay data: {e}')
             return None
 
         ic50_values = []
@@ -157,7 +158,7 @@ def get_compound_potency(
             row_activity_name = row_cell[activity_name_idx]
             if str(row_target_gene).strip() != str(target_gene_id).strip():
                 continue
-            if row_activity_name.strip().upper() != "IC50":
+            if row_activity_name.strip().upper() != bioactivity_measure:
                 continue
 
             # Extract the activity value (in µM) and convert it to nM
@@ -172,7 +173,7 @@ def get_compound_potency(
             return min(ic50_values)
 
     except Exception as e:
-        print(f'Error retrieving potency for CID {cid}: {e}')
+        logger.error(f'Error retrieving potency for CID {cid}: {e}')
         return None
 
     return None

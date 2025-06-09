@@ -1,13 +1,15 @@
 import os
 from typing import List
 
-from data.utils.logging_utils import configure_logger
+from ml_training_base.utils.logging.logging_utils import configure_logger
+
 from data.utils.file_utils import write_smiles_to_file
 from data.ingestion.bioactive_compounds_extraction import ChEMBLExtractor, PubChemExtractor
 
 def main():
     os.makedirs('../var/log', exist_ok=True)
     logger = configure_logger('../var/log/data_ingestion.log')
+
     chembl_extractor = ChEMBLExtractor(bioactivity_threshold=1000, logger=logger)
     pubchem_extractor = PubChemExtractor(bioactivity_threshold=1000, logger=logger)
 

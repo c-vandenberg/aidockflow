@@ -6,22 +6,28 @@ from abc import ABC, abstractmethod
 from functools import partial
 from typing import List, Optional
 
-from chembl_webresource_client.new_client import new_client
 import pubchempy as pcp
-from click.core import batch
-from pubchempy import request
+from chembl_webresource_client.new_client import new_client
 
-from constants import RestApiEndpoints
-from data.utils.logging_utils import configure_logger
-from data.utils.mappings import uniprot_to_gene_id_mapping
-from data.utils.pubchem_api import (get_active_aids, get_active_cids,
+from src.constants import RestApiEndpoints
+from src.data.utils.mappings import uniprot_to_gene_id_mapping
+from src.data.utils.pubchem_api import (get_active_aids, get_active_cids,
                                     get_active_cids_wrapper, get_compounds_in_batches,
                                     batch_iterable, get_compound_potency)
 
 
-class BioactivityExtractorInterface(ABC):
+class BaseBioactivesExtractor(ABC):
     """
     Abstract base class for extracting bioactive compounds from a data source.
+
+    Attributes
+    ----------
+    _bioactivity_measure : str
+        The bioactivity measurement type to filter on (e.g., "Kd", "IC50").
+    _bioactivity_threshold : float, optional
+        The maximum potency value (in nM) to consider a compound bioactive.
+    _logger : logging.Logger
+        A logger instance for logging messages.
 
     Methods
     -------
@@ -29,6 +35,16 @@ class BioactivityExtractorInterface(ABC):
         Abstract method to return a list of canonical SMILES for bioactive compounds given a target UniProt ID
         identifier.
     """
+    def __init__(
+        self,
+        bioactivity_measure: str = 'Kd',
+        bioactivity_threshold: Optional[float] = None,
+        logger: Optional[logging.Logger] = None
+    ):
+        self._bioactivity_measure = bioactivity_measure
+        self._bioactivity_threshold = bioactivity_threshold
+        self._logger = logger if logger else logging.getLogger(__name__)
+
     @abstractmethod
     def get_bioactive_compounds(self, target_uniprot_id: str) -> List[str]:
         """
@@ -46,20 +62,15 @@ class BioactivityExtractorInterface(ABC):
         """
         pass
 
-class ChEMBLExtractor(BioactivityExtractorInterface):
+class ChEMBLBioactivesExtractor(BaseBioactivesExtractor):
     """
     Extracts bioactive compounds for a given target from ChEMBL using a UniProt accession.
 
-    Parameters
+    Attributes
     ----------
-    client : object, optional
+    _client : object, optional
         A ChEMBL client instance for dependency injection. If None, the default client from
         `chembl_webresource_client.new_client` will be used.
-    bioactivity_threshold : float, optional
-        The maximum standard_value (in nM) to consider a compound bioactive.
-        Default is 1000 (i.e. compounds with IC50 <= 1 µM).
-    bioactivity_measure : str, optional
-        The bioactivity measurement type to filter on (e.g. "IC50"). Default is "IC50".
 
     Methods
     -------
@@ -73,13 +84,8 @@ class ChEMBLExtractor(BioactivityExtractorInterface):
         bioactivity_threshold: Optional[float] = None, # In nM (e.g. 1000 nM threshold to filter for compounds with Kd <= 1 µM)
         logger: Optional[logging.Logger] = None
     ):
-        if client is None:
-            self._client = new_client
-        else:
-            self._client = client
-        self._bioactivity_measure = bioactivity_measure
-        self._bioactivity_threshold = bioactivity_threshold
-        self._logger = logger if logger else logging.getLogger(__name__)
+        super().__init__(bioactivity_measure, bioactivity_threshold, logger)
+        self._client = client if client else new_client
 
     def get_bioactive_compounds(self, target_uniprot_id: str) -> List[str]:
         """
@@ -165,18 +171,12 @@ class ChEMBLExtractor(BioactivityExtractorInterface):
         return bioactive_smiles
 
 
-class PubChemExtractor(BioactivityExtractorInterface):
+class PubChemBioactivesExtractor(BaseBioactivesExtractor):
     """
     Extracts bioactive compounds for a given target from PubChem using a UniProt accession.
 
     For PubChem, the provided UniProt accession must first be mapped to an NCBI GeneID using a
     modified lookup that searches by protein accession.
-
-    Parameters
-    ----------
-    bioactivity_threshold : float, optional
-        The maximum potency (IC50 in nM) a compound must have to be considered bioactive.
-        Default is 1000.
 
     Methods
     -------
@@ -189,9 +189,7 @@ class PubChemExtractor(BioactivityExtractorInterface):
         bioactivity_threshold: Optional[float] = None, # In nM (e.g. 1000 nM threshold to filter for compounds with Kd <= 1 µM)
         logger: Optional[logging.Logger] = None
     ):
-        self._bioactivity_measure = bioactivity_measure
-        self._bioactivity_threshold = bioactivity_threshold
-        self._logger = logger if logger else logging.getLogger(__name__)
+        super().__init__(bioactivity_measure, bioactivity_threshold, logger)
 
     def get_bioactive_compounds(self, target_uniprot_id: str) -> List[str]:
         """
@@ -312,75 +310,18 @@ class PubChemExtractor(BioactivityExtractorInterface):
 
             return bioactive_smiles
 
-    def _get_compound_potency(self, compound: pcp.Compound, target_gene_id: str) -> Optional[float]:
-        """
-        Retrieve a potency value (e.g., Kd in nM) for a compound by querying the
-        PubChem bioassay endpoint.
-
-        Parameters
-        ----------
-        compound : pcp.Compound
-            A compound object from PubChem.
-
-        Returns
-        -------
-        Optional[float]
-            The potency value if available, otherwise None.
-        """
-        cid = compound.cid
-        pubchem_bioassay_url = f'https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/assaysummary/JSON'
-        try:
-            response = requests.get(pubchem_bioassay_url, timeout=10)
-            response.raise_for_status()
-            response_json = response.json()
-
-            response_table = response_json.get('Table')
-            if not response_table:
-                return
-
-            response_columns = response_table.get('Columns')
-            response_rows = response_table.get('Row')
-            if not response_columns or not response_rows:
-                return None
-
-            try:
-                columns_list = response_columns.get('Column', [])
-                target_gene_idx = columns_list.index('Target GeneID')
-                activity_name_idx = columns_list.index('Activity Name')
-                activity_value_idx = columns_list.index('Activity Value [uM]')
-            except ValueError as e:
-                print(f'Column not found in bioassay data: {e}')
-                return None
-
-            ic50_values = []
-            for row in response_rows:
-                row_cell = row.get('Cell', [])
-                if not row_cell:
-                    continue
-
-                row_target_gene = row_cell[target_gene_idx]
-                row_activity_name = row_cell[activity_name_idx]
-                if str(row_target_gene).strip() != str(target_gene_id).strip():
-                    continue
-                if row_activity_name.strip().upper() != self._bioactivity_measure:
-                    continue
-
-                # Extract the activity value (in µM) and convert it to nM
-                try:
-                    value_um = float(row_cell[activity_value_idx])
-                    value_nm = value_um * 1000.0
-                    ic50_values.append(value_nm)
-                except (ValueError, TypeError):
-                    continue
-
-            if ic50_values:
-                return min(ic50_values)
-
-        except Exception as e:
-            print(f'Error retrieving potency for CID {cid}: {e}')
-            return None
-
-        return None
+    def _get_bioactive_compound_potency(
+        self,
+        compound: pcp.Compound,
+        target_gene_id: str,
+        logger: logging.Logger = None
+    ) -> Optional[float]:
+        return get_compound_potency(
+            compound=compound,
+            target_gene_id=target_gene_id,
+            bioactivity_measure=self._bioactivity_measure,
+            logger=logger
+        )
 
     @staticmethod
     def _lookup_target_gene_id(target: str) -> Optional[str]:
@@ -399,16 +340,3 @@ class PubChemExtractor(BioactivityExtractorInterface):
             The corresponding NCBI GeneID if found, otherwise None.
         """
         return uniprot_to_gene_id_mapping(target)
-
-    def _get_bioactive_compound_potency(
-        self,
-        compound: pcp.Compound,
-        target_gene_id: str,
-        logger: logging.Logger = None
-    ) -> Optional[float]:
-        return get_compound_potency(
-            compound=compound,
-            target_gene_id=target_gene_id,
-            bioactivity_measure=self._bioactivity_measure,
-            logger=logger
-        )

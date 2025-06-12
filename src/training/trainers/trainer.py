@@ -4,11 +4,11 @@ from os.path import exists
 from typing import Dict, Any, List, Union
 
 from ml_training_base.supervised.trainers.base_supervised_trainers import BasePyTorchSupervisedTrainer
-from ml_training_base.supervised.environments.base_training_environments import PyTorchEnvironment
+from ml_training_base.supervised.environments.base_training_environments import PyTorchTrainingEnvironment
 from ml_training_base.utils.logging.logging_utils import configure_logger
 
 class GNNTrainer(BasePyTorchSupervisedTrainer):
-    def __init__(self, config_path: str, training_env: PyTorchEnvironment):
+    def __init__(self, config_path: str, training_env: PyTorchTrainingEnvironment):
         super().__init__(config_path, training_env)
         self._config: Dict[str, Any] = self._load_config(config_path)
 

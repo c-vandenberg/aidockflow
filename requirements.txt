@@ -1,0 +1,7 @@
+biochemical_data_connectors==0.1.6
+chembl_webresource_client==0.10.9
+ml_training_base==0.3.4
+ord_schema==0.3.99
+PubChemPy==1.0.4
+rdkit==2025.3.2
+Requests==2.32.4

@@ -1,31 +1,32 @@
 import os
 from typing import List
 
-from ml_training_base.utils.logging.logging_utils import configure_logger
+from ml_training_base import configure_logger, write_strings_to_file
+from biochemical_data_connectors import ChEMBLBioactivesConnector, PubChemBioactivesConnector
 
-from data.utils.file_utils import write_smiles_to_file
-from data.ingestion.bioactive_compounds_extraction import ChEMBLBioactivesExtractor, PubChemBioactivesExtractor
 
 def main():
     os.makedirs('../var/log', exist_ok=True)
     logger = configure_logger('../var/log/data_ingestion.log')
 
-    chembl_extractor = ChEMBLBioactivesExtractor(bioactivity_threshold=1000, logger=logger)
-    pubchem_extractor = PubChemBioactivesExtractor(bioactivity_threshold=1000, logger=logger)
+    chembl_extractor = ChEMBLBioactivesConnector(bioactivity_threshold=1000, logger=logger)
+    pubchem_extractor = PubChemBioactivesConnector(bioactivity_threshold=1000, logger=logger)
 
     chembl_bioactives: List[str] = chembl_extractor.get_bioactive_compounds(target_uniprot_id='P00533')
     pubchem_bioactives: List[str] = pubchem_extractor.get_bioactive_compounds(target_uniprot_id='P00533')
 
-    write_smiles_to_file(
+    write_strings_to_file(
         file_path='../data/preprocessed/uniprot_id/P00533/chembl_bioactives',
-        smiles=chembl_bioactives,
-        logger=logger
+        str_list=chembl_bioactives,
+        logger=logger,
+        content_name='SMILES'
     )
 
-    write_smiles_to_file(
+    write_strings_to_file(
         file_path='../data/preprocessed/uniprot_id/P00533/pubchem_bioactives',
-        smiles=pubchem_bioactives,
-        logger=logger
+        str_list=pubchem_bioactives,
+        logger=logger,
+        content_name='SMILES'
     )
 
     print('Test run finished')

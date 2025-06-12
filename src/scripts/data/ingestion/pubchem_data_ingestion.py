@@ -2,11 +2,35 @@
 
 import os
 import argparse
-from typing import List
+from typing import List, Dict, Any
 
-from data.utils.logging_utils import configure_logger
-from data.utils.file_utils import write_smiles_to_file
-from data.ingestion.bioactive_compounds_extraction import PubChemExtractor
+from ml_training_base import configure_logger, write_strings_to_file, load_config
+from biochemical_data_connectors import PubChemBioactivesConnector
+
+
+def parse_config_argument():
+    """
+    Parses command-line arguments.
+
+    For script use with configuration file.
+
+    Returns:
+        argparse.Namespace: Parsed arguments.
+    """
+    parser = argparse.ArgumentParser(
+        description="Extract bioactive compound SMILES strings for a given target from PubChem "
+                    "using a configuration file."
+    )
+    parser.add_argument(
+        "--config_file_path",
+        type=str,
+        required=True,
+        help="Provide path to configuration file. Required configurations are `uniprot_id`, `bioactivity_measure`, "
+             "`bioactive_smiles_save_path`, and `log_save_path`"
+    )
+
+    return parser.parse_args()
+
 
 def parse_arguments():
     """
@@ -55,19 +79,30 @@ def parse_arguments():
 
 def main():
     # Parse command-line arguments, validate paths and configure logger
-    args = parse_arguments()
+    args = parse_config_argument()
 
-    os.makedirs(os.path.dirname(args.compounds_smiles_output_path), exist_ok=True)
-    os.makedirs(os.path.dirname(args.script_log_path), exist_ok=True)
-    logger = configure_logger(log_path=args.script_log_path)
+    config: Dict[str, Any] = load_config(args.config_file_path)
+    data_config: Dict[str, Any] = config.get('data', {})
 
-    pubchem_extractor = PubChemExtractor(bioactivity_threshold=1000, logger=logger)
-    pubchem_bioactives: List[str] = pubchem_extractor.get_bioactive_compounds(target_uniprot_id='P00533')
+    if not data_config.get('bioactive_smiles_save_path'):
+        raise ValueError('You must provide a `bioactive_smiles_save_path` in the configuration file.')
 
-    write_smiles_to_file(
+    if not data_config.get('log_save_path'):
+        raise ValueError('You must provide a `log_save_path` in the configuration file.')
+
+
+    os.makedirs(os.path.dirname(data_config.get('bioactive_smiles_save_path')), exist_ok=True)
+    os.makedirs(os.path.dirname(data_config.get('log_save_path')), exist_ok=True)
+    logger = configure_logger(log_path=data_config.get('log_save_path'))
+
+    pubchem_connector = PubChemBioactivesConnector(bioactivity_threshold=1000, logger=logger)
+    pubchem_bioactives: List[str] = pubchem_connector.get_bioactive_compounds(target_uniprot_id='P00533')
+
+    write_strings_to_file(
         file_path='../data/preprocessed/uniprot_id/P00533/pubchem_bioactives',
-        smiles=pubchem_bioactives,
-        logger=logger
+        str_list=pubchem_bioactives,
+        logger=logger,
+        content_name='SMILES'
     )
 
 if __name__ == "__main__":

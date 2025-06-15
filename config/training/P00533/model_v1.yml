@@ -1,0 +1,9 @@
+data:
+  uniprot_id: "P00533"
+  bioactivity_measure: "Kd"
+  bioactives_public_repos: [
+    'ChEMBL',
+    'PubChem'
+  ]
+  logger_path: "../../../var/log/training/p00533/model_v1.log"
+

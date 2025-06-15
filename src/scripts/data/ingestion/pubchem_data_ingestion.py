@@ -6,6 +6,7 @@ from typing import List, Dict, Any
 
 from ml_training_base import configure_logger, write_strings_to_file, load_config
 from biochemical_data_connectors import PubChemBioactivesConnector
+from biochemical_data_connectors.models import BioactiveCompound
 
 
 def parse_config_argument():
@@ -95,8 +96,12 @@ def main():
     os.makedirs(os.path.dirname(data_config.get('log_save_path')), exist_ok=True)
     logger = configure_logger(log_path=data_config.get('log_save_path'))
 
-    pubchem_connector = PubChemBioactivesConnector(bioactivity_threshold=1000, logger=logger)
-    pubchem_bioactives: List[str] = pubchem_connector.get_bioactive_compounds(target_uniprot_id='P00533')
+    pubchem_connector = PubChemBioactivesConnector(
+        bioactivity_measures=data_config.get('bioactivity_measures'),
+        bioactivity_threshold=1000,
+        logger=logger
+    )
+    pubchem_bioactives: List[BioactiveCompound] = pubchem_connector.get_bioactive_compounds(target_uniprot_id='P00533')
 
     write_strings_to_file(
         file_path='../data/preprocessed/uniprot_id/P00533/pubchem_bioactives',

@@ -5,7 +5,7 @@ from typing import Dict, Any, List, Union
 
 from ml_training_base.supervised.trainers.base_supervised_trainers import BasePyTorchSupervisedTrainer
 from ml_training_base.supervised.environments.base_training_environments import PyTorchTrainingEnvironment
-from ml_training_base.utils.logging.logging_utils import configure_logger
+from ml_training_base.utils.logging_utils import configure_logger
 
 class GNNTrainer(BasePyTorchSupervisedTrainer):
     def __init__(self, config_path: str, training_env: PyTorchTrainingEnvironment):

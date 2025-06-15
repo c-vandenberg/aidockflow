@@ -1,4 +1,4 @@
-biochemical_data_connectors==0.1.6
+biochemical_data_connectors==1.0.0
 chembl_webresource_client==0.10.9
 ml_training_base==0.3.4
 ord_schema==0.3.99

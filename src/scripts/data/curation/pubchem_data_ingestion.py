@@ -5,7 +5,8 @@ import argparse
 from typing import List, Dict, Any
 
 from ml_training_base import configure_logger, write_strings_to_file, load_config
-from biochemical_data_connectors import ChEMBLBioactivesConnector
+from biochemical_data_connectors import PubChemBioactivesConnector
+from biochemical_data_connectors.models import BioactiveCompound
 
 
 def parse_config_argument():
@@ -18,7 +19,7 @@ def parse_config_argument():
         argparse.Namespace: Parsed arguments.
     """
     parser = argparse.ArgumentParser(
-        description="Extract bioactive compound SMILES strings for a given target from ChEMBL "
+        description="Extract bioactive compound SMILES strings for a given target from PubChem "
                     "using a configuration file."
     )
     parser.add_argument(
@@ -31,17 +32,16 @@ def parse_config_argument():
 
     return parser.parse_args()
 
+
 def parse_arguments():
     """
     Parses command-line arguments.
-
-    For script use without configuration file.
 
     Returns:
         argparse.Namespace: Parsed arguments.
     """
     parser = argparse.ArgumentParser(
-        description="Extract bioactive compound SMILES strings for a given target from ChEMBL."
+        description="Extract bioactive compound SMILES strings for a given target from PubChem."
     )
     parser.add_argument(
         '--target_uniprot_id',
@@ -72,7 +72,7 @@ def parse_arguments():
         '--script_log_path',
         type=str,
         required=True,
-        default='var/log/preprocessed/chembl/data_ingestion.log',
+        default='../var/log/preprocessed/pubchem/data_ingestion.log',
         help='Path log file.'
     )
 
@@ -83,19 +83,27 @@ def main():
     args = parse_config_argument()
 
     config: Dict[str, Any] = load_config(args.config_file_path)
+    data_config: Dict[str, Any] = config.get('data', {})
 
-    os.makedirs(os.path.dirname(args.compounds_smiles_output_path), exist_ok=True)
-    os.makedirs(os.path.dirname(args.script_log_path), exist_ok=True)
-    logger = configure_logger(log_path=args.script_log_path)
+    if not data_config.get('bioactive_smiles_save_path'):
+        raise ValueError('You must provide a `bioactive_smiles_save_path` in the configuration file.')
 
-    chembl_extractor = ChEMBLBioactivesConnector(bioactivity_threshold=1000, logger=logger)
-    chembl_bioactives: List[str] = chembl_extractor.get_bioactive_compounds(target_uniprot_id='P00533')
+    if not data_config.get('log_path'):
+        raise ValueError('You must provide a `log_save_path` in the configuration file.')
 
-    write_strings_to_file(
-        file_path=args.compounds_smiles_output_path,
-        str_list=chembl_bioactives,
-        logger=logger,
-        content_name='SMILES'
+
+    os.makedirs(os.path.dirname(data_config.get('bioactive_smiles_save_path')), exist_ok=True)
+    os.makedirs(os.path.dirname(data_config.get('log_path')), exist_ok=True)
+    logger = configure_logger(log_path=data_config.get('log_save_path'))
+
+    pubchem_connector = PubChemBioactivesConnector(
+        bioactivity_measures=data_config.get('bioactivity_measures'),
+        bioactivity_threshold=1000,
+        cache_dir=data_config.get('cache_dir', '../data/cache/'),
+        logger=logger
+    )
+    pubchem_bioactives: List[BioactiveCompound] = pubchem_connector.get_bioactive_compounds(
+        data_config.get('uniprot_id')
     )
 
 if __name__ == "__main__":

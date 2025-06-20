@@ -1,0 +1,5 @@
+data:
+  zinc_downloader_script_path: 'scripts/data/ingestion/ZINC-downloader-3D-smi.wget'
+  zinc_compound_save_dir: '../data/raw/ZINC15-3D-druglike/'
+  max_workers: 10
+  log_path: "../var/log/ZINC15-3D-druglike/data_ingestion.log"

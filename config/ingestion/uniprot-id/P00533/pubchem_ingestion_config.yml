@@ -6,4 +6,5 @@ data:
   ]
   bioactivity_threshold: 1000
   bioactive_smiles_save_path: "../data/preprocessed/uniprot_id/P00533-2/pubchem_bioactives"
-  log_save_path: "../var/log/data_ingestion-2.log"
+  cache_dir: "../data/cache/P00533-2/pubchem/"
+  log_save_path: "../var/log/P00533/pubchem/data_ingestion.log"

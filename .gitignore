@@ -88,8 +88,8 @@ cython_debug/
 # ** Project-Specific Ignored Files **
 # ------------------------------
 
-# Training Data
-/data/training/*
+# Raw, cached, preprocessed, processed and training Data
+/data/*
 
 # Database Files
 /data/database/

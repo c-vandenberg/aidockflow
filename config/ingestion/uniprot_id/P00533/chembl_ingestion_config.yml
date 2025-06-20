@@ -1,6 +1,0 @@
-data:
-  uniprot_id: "P00533"
-  bioactivity_measure: "Kd"
-  bioactivity_threshold: 1000
-  bioactive_smiles_save_path: "../data/preprocessed/uniprot_id/P00533-2/chembl_bioactives"
-  log_save_path: "../var/log/data_ingestion-2.log"

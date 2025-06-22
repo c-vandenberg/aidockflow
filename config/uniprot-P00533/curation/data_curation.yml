@@ -1,0 +1,18 @@
+data:
+  # High fidelity actives (ChEMBL, PubChem) curation
+  uniprot_id: "P00533"
+  bioactivity_measures: [
+    "Kd",
+    "Ki"
+  ]
+  bioactivity_threshold: 1000
+  standardized_actives_path: "../data/processed/P00533/actives/standardized_actives.parquet"
+  cache_dir: "../data/raw/high-fidelity-actives/cache/P00533/"
+
+  # ZINC15 3D druglike centroid library curation
+  zinc_downloader_script_path: 'scripts/data/ingestion/ZINC-downloader-3D-smi.wget'
+  zinc_raw_data_output_dir: '../data/raw/ZINC15-3D-druglike/'
+  max_workers: 10
+
+  data_curation_log_path: "../var/log/processing/P00533/data_curation.log"
+  training_log_path: "../var/log/processing/P00533/training.log"

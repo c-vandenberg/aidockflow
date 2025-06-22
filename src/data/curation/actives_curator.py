@@ -1,0 +1,58 @@
+import logging
+from typing import Dict, List
+
+import pandas as pd
+
+from biochemical_data_connectors import ChEMBLBioactivesConnector, PubChemBioactivesConnector, CompoundStandardizer
+from biochemical_data_connectors.models import BioactiveCompound
+
+
+class HighFidelityActivesCurator:
+    def __init__(self, config: Dict, logger: logging.Logger):
+        self._config = config
+        self._logger = logger
+        self._standardizer = CompoundStandardizer(logger=logger)
+
+    def run(self):
+        # 1) Validate configuration
+        uniprot_id: str = self._config.get('uniprot_id')
+        bioactivity_measures: Dict[str] = self._config.get('bioactivity_measures')
+        if not all ([uniprot_id, bioactivity_measures]):
+            raise ValueError('You must provide a `uniprot_id` and `bioactivity_measures` in the configuration file.')
+
+        self._logger.info("Starting high-fidelity actives curation...")
+
+        # 2) Instantiate and run biochemical data connectors
+        chembl_connector = ChEMBLBioactivesConnector(
+            bioactivity_measures=self._config.get('bioactivity_measures'),
+            bioactivity_threshold=1000,
+            cache_dir=self._config.get('cache_dir', '../data/cache/'),
+            logger=self._logger
+        )
+        pubchem_connector = PubChemBioactivesConnector(
+            bioactivity_measures=self._config.get('bioactivity_measures'),
+            bioactivity_threshold=1000,
+            cache_dir=self._config.get('cache_dir', '../data/cache/'),
+            logger=self._logger
+        )
+        raw_actives: List[BioactiveCompound] = chembl_connector.get_bioactive_compounds(
+            self._config.get('uniprot_id')
+        ) + pubchem_connector.get_bioactive_compounds(
+            self._config.get('uniprot_id')
+        )
+
+        # 3) Standardize compounds
+        standardized_actives: List[BioactiveCompound] = []
+        for compound in raw_actives:
+            standardized_data = self._standardizer.standardize_smiles(compound.smiles)
+            compound.smiles = standardized_data.get('smiles')
+            compound.standardized_inchikey = standardized_data.get('inchi_key')
+            standardized_actives.append(compound)
+
+        # 3) Deduplicate and save the final parquet file
+        df = pd.DataFrame(standardized_actives)
+        df.drop_duplicates(subset='standardized_inchikey')
+        self._logger.info(f"Preparing to save {len(df)} curated compounds to Parquet file...")
+        df_to_save = df.drop(columns=['raw_data'])
+        df_to_save.to_parquet(self._config.get('standardized_actives_path'))
+        self._logger.info("High-fidelity actives curation complete.")

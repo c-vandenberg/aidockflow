@@ -16,3 +16,9 @@ data:
 
   data_curation_log_path: "../var/log/processing/P00533/data_curation.log"
   training_log_path: "../var/log/processing/P00533/training.log"
+
+model:
+
+training:
+
+env:

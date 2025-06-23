@@ -262,3 +262,64 @@ In its final layer, the encoder pools all atom vectors into one fixed-length mol
 In most GNN libraries, this output head is just a two-layer MLP that turns this final vector into either:
   * A single sigmoid score (in our case binder/non-binder).
   * A single linear value (e.g. Predicted ΔG, Kd etc.).
+
+### 3.3.1. Round 0
+The training dataset is `graphs_round0_train.pt` and the general steps are:
+1. Initial Stage:
+   1. Create a brand-new model with the hyperparameters chosen in Step 3.3.
+2. Epoch Loop Stage:
+   1. Run for 20-30 epochs, with a minibatch shuffle.
+   2. All weights (message-passing and output head) to be updated with AdamW.
+   3. Early-stop when validation AUROC hasn’t improved for 5 epochs.
+3. External Validation:
+   1. Run the freshly trained model on `graphs_val.pt`.
+   2. Compute AUROC, PR-AUC, accuracy, etc.
+   3. Log to `val_metrics_round{r}.json` and TensorBoard.
+4. Save Stage:
+   1. Save round 0 model full checkpoint (encoder + head) to `gnn_round0.pt`.
+  
+### 3.3.2. Rounds ≥ 1 — “Light Fine-Tune”
+As the encoder has already learned useful chemistry, we mainly want to let the output head adjust to the new labels produced by the latest VSX batch without overfitting.
+
+The training dataset is `graphs_round{r}_train.pt` and the general steps are:
+1. **Load Previous Weights**
+2. **Freeze Encoder:**
+   1. If we have plenty of GPU and want a bit more flexibility, we could “thaw” the
+encoder at a lower LR (e.g. 0.1x) instead of a full freeze.
+3. **Optimizer:**
+   1. Once we freeze the encoder, we will have two kinds of weights in the model:
+      1. Frozen Encoder Weights: These have `param.requires_grad = False`, and so PyTorch will not calculate gradients for them.
+      2. Still Trainable Output Head Weights: The few dense layers (often a 2-layer MLP) that sit on top of the graph’s encoder/message layers. These have `param.requires_grad = True`.
+   2. We must build the optimizer so that it only updates the weights that are still trainable. A common way to do this is `optim = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr = 2 * BASE_LR)`.
+   3. Note that because the list is small (maybe 20 k weights instead of 1 M+) we can raise the learning rate a little—often double the rate you used when the whole network was trainable. The higher LR helps the output head adapt quickly to the new labels without risking instability in the frozen encoder.
+4. **Epochs:**
+   1. 2-3 epochs are usually enough. We will need to monitor validation AUROC—if it jumps quickly then plateaus, stop.
+5. **External Validation:**
+   1. Run the freshly trained model on `graphs_val.pt`.
+   2. Compute AUROC, PR-AUC, accuracy, etc.
+   3. Log to `val_metrics_round{r}.json` and TensorBoard.
+6. **External Test (If End of Training):**
+   1. Run the freshly trained model on `graphs_test.pt`.
+   2. Compute AUROC, PR-AUC, accuracy, etc.
+   3. Log to `test_metrics.json` and TensorBoard.
+7. **Save:**
+   1. Save round `r` model full checkpoint (encoder + head) to `gnn_round{r}.pt`.
+  
+### 3.4. Inference
+For each round, once the training stage finishes, we run production-quality scoring/inference to generate fresh scores that the active learning loop will use to pick the next 0.5M candidates.
+
+This is the same routine that will be used once the active learning loop has converged and model is fully trained and is ready to be used to score a commercial-sized library (e.g. hundreds of millions of compounds).
+
+The general steps are:
+1. Mini-Batch the Library:
+   1. This will feed the huge ligand list to the GPU in bite-size chunks.
+   2. Only use centroid ligands that have not been docked yet (or the whole set if is the first round). I.E. Use `round{r}_unsampled_centroid_pool.smi`.
+   3. Mini-batch sizes should be 4096 molecules. This is small enough to fit in GPU memory but large enough for speed.
+2. Forward Pass Without Gradients:
+   1. Ask the trained model to predict binding scores; no training, so we disable gradient bookkeeping.
+3. Write Results to Disk
+   1. Combine each SMILES with their predicted scores and save to `scores_round{r}.csv` for round `r`.
+  
+It should be noted that inference will be running while VSX docking from the previous round is still running on CPU. Therefore, GPU and CPU work will overlap, and GPU inference is not the bottleneck; VSX docking is.
+
+## 4. Active Learning Loop (VSX-Derived Labels)

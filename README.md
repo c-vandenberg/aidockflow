@@ -71,23 +71,21 @@ Another core contribution of our work is to refine the active learning loop wher
 # Protocol
 ## 1. Data Ingestion & Curation
 ### 1.1. Retrieve High-Fidelity Actives
-1. Target to be defined by Uniprot Accession Number in training config file.
-2. Gather SMILES and bioactivity measure values for compounds that are known
-binders to the target from public sources (ChEMBL, PubChem, etc.) via Python APIs or bulk downloads (SDF/CSV).
-3. Likely parameters to use to determine known binders include inhibition constant (Ki)
-and dissociation constant (Kd). Set threshold value (in nM) for binding parameter. These will be defined in training config file.
-4. When extracting compounds, keep InChIKey, binding parameter (Ki or Kd), and SMILES string.
-5. Merge compounds from each public source and deduplicate based on InChIKey.
-6. Clean and normalize/standardize molecules:
-    * Remove salts.
-    * Protonation/tautomer standardization at pH 7.4 with `dimorphite-dl`.
-    * Normalize binding parameter to nM.
-    * Calculate InChIKey if not present in public sources.
-    * Canonicalize SMILES with RDKit.
-    * If a compound appears multiple times keep the lowest value and record median/σ for reference.
-7. Save compounds as `validated_actives.parquet` file:
-    * Apache Parquet is an open source, column-oriented data file format designed for efficient data storage and retrieval.
-    * Parquet table (columnar, compressed) will have the following schema:
+1. **Target** to be defined by **Uniprot Accession Number** in training config file.
+2. Gather **SMILES** and **bioactivity measure values** for compounds that are **known binders** to the target from public sources (**ChEMBL**, **PubChem**, etc.) via Python APIs or bulk downloads (SDF/CSV).
+3. Likely parameters to use to determine known binders include **inhibition constant** (**Ki**) and **dissociation constant** (**Kd**). Set **threshold value** (in **nM**) for binding parameter. These will be defined in training config file.
+4. When extracting compounds, keep **InChIKey**, **binding parameter** (**Ki** or **Kd**), and **SMILES string**.
+5. If a compound appears **multiple times** keep the **lowest value** and record **count**, **mean**, **median**, and **σ**.
+6. **Merge** compounds from each public source and **deduplicate based on InChIKey**.
+7. **Clean** and **normalize/standardize** molecules:
+    * Remove **salts**.
+    * **Protonation/tautomer** standardization at **pH 7.4** with `dimorphite-dl`.
+    * Normalize binding parameter to **nM**.
+    * **Calculate InChIKey** if not present in public sources.
+    * **Canonicalize SMILES** with RDKit.
+8. Save compounds as `validated_actives.parquet` file:
+    * **Apache Parquet** is an open source, column-oriented data file format designed for efficient data storage and retrieval.
+    * Parquet table (**columnar, compressed**) will have the following schema:
 <br>
   <div align="center">
     <table>
@@ -140,65 +138,64 @@ and dissociation constant (Kd). Set threshold value (in nM) for binding paramete
 <br>
 
 ### 1.2. Split High-Fidelity Actives Data
-1. Do random stratified split 70/15/15% (train, validation, test). Exact split ratio to be defined in training config file:
-    * Group actives by Bemis‑Murcko scaffold (`rdMolDescriptors.GetScaffoldForMol`).
-    * Shuffle scaffolds with fixed RNG seed.
+1. Do **random stratified split** 70/15/15% (train, validation, test). Exact split ratio to be defined in training config file:
+    * Group actives by **Bemis‑Murcko scaffold** (`rdMolDescriptors.GetScaffoldForMol`).
+    * **Shuffle scaffolds** with **fixed RNG seed**.
     * Allocate 70 % of scaffolds to train, 15 % to validation, 15 % to test.
 2. Write three Parquet files with same schema as before - `train_pos.parquet`, `val_pos.parquet`, `test_pos.parquet`.
 
 ### 1.3. Build “Druglike-Centroid Library”
-Based on the paper by Zhou et al., we will build a specialized subset of ~13 million molecules, referred to as the druglike-centroid library. These will be extracted from the ZINC15 3D druglike database (~493.6 million molecules) by:
-1. Clustering similar molecules from the ZINC 3D druglike database, using a cutoff of 0.6 Tanimoto similarity (defined in training config file).
-2. From each cluster, the smallest molecule will be selected and added to the library, serving as the centroid of the cluster.
-3. This process will result in the formation of the druglike-centroid library, which will contain ~13 million molecules.
+Based on the paper by Zhou et al., we will build a **specialized subset of ~13 million molecules**, referred to as the **druglike-centroid library**. These will be extracted from the **ZINC15 3D druglike database** (~493.6 million molecules) by:
+1. **Clustering similar molecules** from the ZINC 3D druglike database, using a **cutoff of 0.6 Tanimoto similarity** (defined in training config file).
+2. From each cluster, the **smallest molecule**will be selected and added to the library, serving as the **centroid of the cluster**.
+3. This process will result in the formation of the **druglike-centroid library**, which will contain **~13 million molecules**.
 
-The purpose of creating the druglike-centroid library is to ensure that the model is exposed to a wide range of chemical space during the initial iteration.
+The purpose of creating the druglike-centroid library is to ensure that the model is exposed to a **wide range of chemical space** during the initial iteration.
 The steps for this include:
-1. Download ZINC15 drug-like 3D SMILES dataset.
-2. Generate 1024‑bit ECFP4 fingerprints in streamed fashion (RDKit).
-3. Cluster with Tanimoto 0.6 (defined in training config file) using Butina‑like algorithm (Faiss for speed).
-4. Remove any centroid whose Tanimoto similarity to any of the high-fidelity actives is 1.0 (i.e. they are the same molecule).
-5. Calculate InChIKey for each molecule and save druglike-centroid library to
-`centroid_pool.parquet` the following schema:
+1. **Download** ZINC15 drug-like 3D SMILES dataset.
+2. **Generate 1024‑bit ECFP4 fingerprints** in streamed fashion (RDKit).
+3. **Cluster** with Tanimoto 0.6 (defined in training config file) using **Butina‑like algorithm** (Faiss for speed).
+4. **Remove** any centroid whose Tanimoto similarity to any of the high-fidelity actives is **1.0** (i.e. they are the same molecule).
+5. **Calculate InChIKey** for each molecule and save druglike-centroid library to `centroid_pool.parquet` the following schema:
    1. `inchi_key` (str)
    2. `smiles` (str)
   
 ### 1.4. Create “round-0” Candidate Training Dataset, & Validation/Testing Datasets
-In the training workflow from Zhou et al., for the first iteration, 0.5 million and 1 million molecules were randomly selected from the centroid library as the training and testing datasets respectively.
+In the training workflow from Zhou et al., for the first iteration, **0.5 million** and **1 million** molecules were randomly selected from the centroid library as the **training** and **testing datasets** respectively.
 
-We will slightly alter this to sample 0.5 million molecules, followed by a random stratified 70/15/15% split (with both the sample and split to be tunable in the config file). The thinking is:
-1. Training Dataset:
+We will slightly alter this to sample 0.5 million molecules, followed by a **random stratified 70/15/15% split** (with both the sample and split to be tunable in the config file). The thinking is:
+1. **Training Dataset:**
    1. We do not want to dilute the high-fidelity Ki/Kd positives in the training dataset too much, but at the same time dilute them enough with negatives from the `centroid_pool.parquet` pool so that the model learns from broad chemical space.
    2. Therefore, ~350,000 negatives from the `centroid_pool.parquet` pool should be a good starting point.
-2. Validation/Testing Dataset:
+2. **Validation/Testing Dataset:**
    1. We will start with ~75,000 negatives in both the validation and testing datasets.
    2. It is hoped that ~75,000 negatives, plus the positives in each will be enough to get a stable AUROC estimate.
   
 
 The steps to create the round 0 training dataset, and the validation/testing datasets are:
 1. Randomly sample 500,000 compounds (defined in training config file) from `centroid_pool.parquet` (**exploration**) and save to `round0_sampled_centroid_pool.parquet`.
-2. Save unsampled pool to `round0_unsampled_centroid_pool.parquet`. This will be used in Step 4.1. to sample 250,000 undocked ligands for active learning loop at the end of round 0.
-3. Do a random stratified 70/15/15% training/validation/testing split of `round0_sampled_centroid_pool.parquet`, saving to `train_neg.parquet`, `val_neg.parquet`, and `test_neg.parquet`.
-4. Append all positives from `train_pos.parquet`, `val_pos.parquet`, and `test_pos.parquet` to the respective negative files from step 3 (**exploitation**).
+2. Save **unsampled pool** to `round0_unsampled_centroid_pool.parquet`. This will be used in **Step 4.1.** to sample **250,000 undocked ligands** for **active learning loop** at the end of round 0.
+3. Do a **random stratified 70/15/15% training/validation/testing split** of `round0_sampled_centroid_pool.parquet`, saving to `train_neg.parquet`, `val_neg.parquet`, and `test_neg.parquet`.
+4. **Append** all positives from `train_pos.parquet`, `val_pos.parquet`, and `test_pos.parquet` to the respective negative files from step 3 (**exploitation**).
 5. We should now have `round0_full_train.parquet`, `full_val.parquet`, and `full_test.parquet`.
-6. Deduplicate all three datasets based on InChiKeys, shuffle and write to `.smi` files, followed by compression with gzip (e.g. `round0_full_train.smi`, then `round0_full_train.smi.gzip`).
-7. **N.B.** To prevent any data leakage validation and test datasets:
+6. **Deduplicate all three datasets based on InChiKeys**, shuffle and write to `.smi` files, followed by compression with gzip (e.g. `round0_full_train.smi`, then `round0_full_train.smi.gzip`).
+7. **N.B.** To **prevent any data leakage** validation and test datasets:
    * Are to be frozen throughout the training regime. This means they should not be relabeled, nor should they be replaced with a new set of molecules.
-   * Should not be added to `graphs_master.pt` (see later) and should never be included in the active learning loop.
+   * Should not be added to `graphs_master.pt` (see later) and should **never be included in the active learning loop**.
 
-A `.smi` file is plain text, tab-separated list of molecules:
-  * First column – SMILES string
-  * Second column – InchiKey
+A `.smi` file is **plain text, tab-separated** list of molecules:
+  * **First column** – SMILES string
+  * **Second column** – InchiKey
 
 ### 1.5. Prepare Target Structure
-1. Target to be defined by Uniprot Accession Number in training config file.
-2. Download PDB or AlphaFold model (target source database to be defined in training config file).
-3. Use PDBFixer to add missing residues/atoms, assign bonds, and remove water molecules.
+1. **Target** to be defined by **Uniprot Accession Number** in training config file.
+2. Download **PDB** or **AlphaFold** model (target source database to be defined in training config file).
+3. Use **PDBFixer** to add missing residues/atoms, assign bonds, and remove water molecules.
 4. Use `propka` to add pH 7.4 protonation.
-5. Use OpenBabel to add hydrogens.
-6. Energy-minimize side chains with Rosetta FastRelax (2,000 cycles, coordinates constraints).
-7. Convert to PDBQT with AutoDockTools script (`prepare_receptor4.py`).
-8. Store copy of relaxed target in both PDB and PDBQT files (`target_prepped.pdb` and `target_prepped.pdbqt`).
+5. Use **OpenBabel** to add hydrogens.
+6. **Energy-minimize side chains** with **Rosetta FastRelax** (2,000 cycles, coordinates constraints).
+7. Convert to **PDBQT** with AutoDockTools script (`prepare_receptor4.py`).
+8. Store copy of relaxed target in both **PDB** and **PDBQT** files (`target_prepped.pdb` and `target_prepped.pdbqt`).
 
 ## 2. Featurization (Round 0 Initially)
 **Data Type Conversions:**

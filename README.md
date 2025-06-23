@@ -486,3 +486,147 @@ To check for convergence, we will be checking three measures:
   </table>
   </div>
 <br>
+
+An example of how the `progress.tsv` file may look:
+<br>
+  <div align="center">
+    <table>
+    <thead>
+      <tr>
+        <th class="text-center">Round</th>
+        <th><code>best_gnn_mean</code></th>
+        <th><code>best_gnn_delta</code></th>
+        <th><code>best_dG_mean</code></th>
+        <th><code>best_dG_delta</code></th>
+        <th><code>n_ligands_scored</code></th>
+        <th>Comment</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="text-center">0</td>
+        <td class="text-right">0.934</td>
+        <td class="null-value">--</td>
+        <td class="text-right">-10.7</td>
+        <td class="null-value">--</td>
+        <td class="text-right">5,000,000</td>
+        <td>Initial</td>
+      </tr>
+      <tr>
+        <td class="text-center">1</td>
+        <td class="text-right">0.941</td>
+        <td class="text-right">0.007</td>
+        <td class="text-right">-11.1</td>
+        <td class="text-right">-0.4</td>
+        <td class="text-right">5,000,000</td>
+        <td>Ok</td>
+      </tr>
+      <tr>
+        <td class="text-center">2</td>
+        <td class="text-right">0.942</td>
+        <td class="text-right">0.001</td>
+        <td class="text-right">-11.18</td>
+        <td class="text-right">-0.08</td>
+        <td class="text-right">5,000,000</td>
+        <td>Plateau?</td>
+      </tr>
+      <tr>
+        <td class="text-center">3</td>
+        <td class="text-right">0.943</td>
+        <td class="text-right">0.001</td>
+        <td class="text-right">-11.22</td>
+        <td class="text-right">-0.04</td>
+        <td class="text-right">5,000,000</td>
+        <td>Stopping</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+<br>
+
+### 4.7. Build Next Round Training Dataset (If Not Converged)
+There are two things to consider when deciding how to curate the next rounds training dataset from the `graph_master.pt` cumulative dataset:
+1. **Why not train using the whole `graph_master.pt` dataset?**
+   1. After a few rounds `graph_master.pt` will contain millions of graphs, therefore using this full cumulative training dataset would explode GPU hours with diminishing returns.
+   2. A lot of these graphs will be labelled –1 (masked) and therefore will only add noise, not signal.
+   3. Active-learning theory assumes we focus on the newest informative labels while keeping a stable set of high-confidence positives/negatives.
+2. **Why not train on a brand new 500k ligands?**
+   1. This would result in the GNN model “forgetting” what it has learned about seed positives and strong negatives from previous rounds.b. As a result, validation metrics would bounce wildly because the label distribution would change on each new round.
+
+Therefore, to build the next rounds training dataset (`graphs_round{r+1}_train.pt`), we will include:
+1. **All Seed Positives:** All ligand graphs in `graph_master.pt` that are in the high-fidelity dataset `train_pos.parquet`.
+2. **Latest VSX Labelled Batch:** All ligand graphs in that are in `round{r}_active_learning.smi`
+3. **Replay Buffer:** A random 50 – 100k graphs from earlier rounds whose labels are not –1. This prevents forgetting and stabilizes AUROC. In the example below, this is a fixed 2% random sample, but we could make this tunable in the config file.
+
+The psuedocode for this would look like:
+```
+master = torch.load('graphs_master.pt')
+seed_pos_inchi = pd.read_parquet(‘train_pos.parquet`, columns=['inchkey’])
+latest_active_learning_inchikeys = []
+
+with gzip.open(‘round{r}_candidates.smi.gz’, ‘rt’) as file:
+   for line in file:
+      if not line.strip() # Skip blank lines
+         continue
+      inchikey = line.split(‘\t’, 1)[1].rstrip() # Second column
+      latest_active_learning_inchikeys.append(inchikey)
+      train_set = []
+
+      for graph in master:
+         if graph.inchi_key in seed_pos_inchi or graph.inchi_key in latest_active_learning_inchikeys:
+            train_set.append(graph)
+         elif random.random() < 0.02: # 2% Replay buffer:
+            train_set.append(graph)torch.save(train_set, f' graphs_round{r+1}_train.pt )
+```
+
+## 5. High-Precision Docking & Post-Processing
+### 5.1. Candidate List
+1. Gather union of top‑0.5 % GNN‑ranked molecules across all rounds (~50 k‑100 k) and save to `final_candidates.smi`.
+
+### 5.2. VSH Docking
+1. Redock these top `final_candidates.smi` on a slower, higher‑quality docking mode.
+2. For example, RosettaVS‑VSH with flexible side chains and a finer search.
+3. Save these scores to `vsh_scores.csv`
+
+### 5.3. Medicinal Chemistry Filters
+We can then run various cheap cheminformatics quality filters and to remove any ligands that have poor druglikeness and those with pharmacologically undesirable substructures or potential toxicity.
+For example:
+1. **cLogP:**
+   1. Those ligands with a calculated LogP (cLogP) that is too low (too hydrophillic) means that it will not be orally bioavailable and will not be able to pass through the lipid bilayers of target cells.
+   2. Conversely, those ligands with a cLogP that is too high (too hydrophobic), means that it will accumulate in fatty tissues and lipid bilayers.
+   3. For efficient transport, the drug must be hydrophobic enough to partition into the lipid bilayer, but not so hydrophobic, that once it is in the bilayer, it will not partition out again.
+   4. Additionally, hydrophobicity plays a major role in determining where drugs are distributed within the body after absorption and, consequently, in how rapidly they are metabolized and excreted.
+   5. We can therefore calculate the cLogP of each of these top candidates using the `rdkit.Chem.Crippen` module on the parent (desalted) structure, and remove those under a certain value (e.g. ≤ 3.5)
+2. **Buried unsatisfied hydrogen-bond donors / acceptors:**
+   1. A buried polar atom that cannot donate/accept H-bonds in the pocket is an enthalpic penalty and often predicts low potency.
+   2. After docking we can therefore run PLIP (`plip -f complex.pdb -o …`) or Rosetta’s InterfaceAnalyzer mover to list buried unsats Parse per-ligand
+   3. counts.
+   4. If any ligand is below a certain threshold (e.g. ≤ 1 buried unsat per ligand), we can therefore remove it.
+3. **Torsion outliers (CSD Torsion Library):**
+   1. Unusual torsion/dihedral angles indicate strained conformations with high internal strain. This indicates instability and a synthetic difficulty.
+   2. We can therefore use the `csd.analysis.TorsionAnalyser.analyse_molecule` method from the Mogul library from the Cambridge Structural Database (CSD) software suite, accessible by the CSD Python API
+      1. Export the ligand from the docked pose as SDF and load the ligand using `ligand = sd.io.MoleculeReader('path/to/your/ligand.sdf')[0]`.
+      2. The core of this analysis is the `csd.analysis.TorsionAnalyser`. This tool uses data from the Mogul library, which is derived from the CSD, to assess the likelihood of observed torsion angles.
+      3. Running `analysed_torsions = csd.analysis.TorsionAnalyser.analyse_molecule` will give the `analysed_torsions` object containing a list of all the rotatable bond torsions analyzed as `Torsion` objects, each having a `classification` attribute.
+      4. This `classification` attribute can have values such as “Common”, “Infrequent”, “Unusual” (or “Allowed”, “Outlier”, “Unknown”).
+      5. We can then count the number of “Unusual” or “Outlier” for a given ligand, and if it is above a certain threshold, we can drop it.
+4. **PAINS Filter:**
+   1. **Pan-assay interference compounds (PAINS)** are chemical compounds that often give false positive results in high-throughput screens.
+   2. PAINS tend to react nonspecifically with numerous biological targets rather than specifically affecting one desired target, and several disruptive functional groups are shared by many PAINS.
+   3. We can use RDKit’s built-in SMARTS catalogues to filter out any ligands with PAINS substructures:
+      1. For each ligand SMILES, convert to `Mol` object via `rdkit.Chem.MolFromSmiles(ligand)`
+      2. Initialise RDKit PAINS filter catalogue via `params = rdkit.Chem.FilterCatalog.FilterCatalogParams()` and `params.AddCatalog(FilterCatalogParams.FilterCatalogs.PAINS)`
+      3. Then, create the `FilterCatalog` object via `catalog = FilterCatalog(params)`.
+      4. We then iterate through each of our ligand `Mol` objects, passing them to `matches = catalog.GetMatches(mol)`. If `matches` is not `None`, a PAINS alert is fired.
+      5. We can then drop that ligand, and log the details:
+         ```
+         rejected_alerts = []
+         for match in matches:
+            Alert_name = match.GetDescription()
+            Smiles = Chem.MolToSmiles(mol)
+            rejected_alerts.append({‘SMILES’: smiles, ‘Alert’: alert_name})
+         print(f"Alert fired for molecule {SMILES}: {alert_name}")
+         ```
+5. **Brenk Filter:**
+   1. The Brenk filter comes from the paper "Lessons Learnt from Assembling Screening Libraries for Drug Discovery for Neglected Diseases" R. Brenk et al.” and removes molecules containing substructures with undesirable pharmacokinetics or toxicity.
+   2. To implement this, we can simply add the Brenk filter to the RDKit filter catalogue in step ii when implementing the PAINS filter: `params.AddCatalog(FilterCatalogParams.FilterCatalogs.BRENK`.

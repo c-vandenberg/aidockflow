@@ -8,6 +8,24 @@ Our methodology introduces several key enhancements to the data curation and mod
 Another core contribution of our work is to refine the active learning loop where a Graph Neural Network (GNN) surrogate is iteratively retrained. We introduce a three-tiered labelling strategy based on RosetteVS docking scores where the top 10% of docked compounds are labelled as "binders", the bottom 10% are labelled as "non-binders", and the ambiguous middle 50% are ignored to ensure the model is trained only on high-confidence data. Additionally, for reduced computational expense, we replace the cumulative training dataset approach with a "replay buffer" (a smaller, random sample of previously seen compounds) to prevent catastrophic forgetting of model learning. Our final contribution is the addition of PAINS and Brenk filters in addition to the suite of medicinal chemistry filters proposed by *Zhou et al.*
 
 # Contents
+<details>
+   <summary><b>AiDockFlow Protocol</b></summary>
+   &nbsp; &nbsp; &nbsp; &nbsp; 1 [Data Ingestion & Curation](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#1-data-ingestion--curation)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 1.1 [Retrieve High-Fidelity Actives](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#11-retrieve-high-fidelity-actives)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 1.2 [Split High-Fidelity Actives Data](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#12-split-high-fidelity-actives-data)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 1.3 [Build “Druglike-Centroid Library”](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#13-build-druglike-centroid-library)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 1.4 [Create “round-0” Candidate Training Dataset, & Validation/Testing Datasets](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#14-create-round-0-candidate-training-dataset--validationtesting-datasets)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 1.5 [Prepare Target Structure](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#15-prepare-target-structure)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 2 [Featurization (Round 0 Initially)](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#2-featurization-round-0-initially)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 2.1 []()<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 2.2 []()<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 2.3 []()<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; 2.3.1 []()<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; 2.3.2 []()<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 2.4 []()<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 2.5 []()<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 2.6 []()<br>
+</details>
 
 
 # Protocol

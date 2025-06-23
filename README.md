@@ -639,19 +639,19 @@ Throughout this pipeline, the strategic goal has evolved:
    2. The purpose was explicitly to ensure that the model was **exposed to a wide range of chemical space**.
 2. **Final Stage (Exploitation & Efficiency):**
    1. After the **active learning loop converges** and we have run **high-precision VSH docking**, we have a list of potentially **50,000-100,000 top-ranked compounds**. It is **financially** and **logistically impossible** to **synthesize and test all of them**.
-   2. Therefore, the goal shifts to **exploitation**. We now must select a manageable number (e.g., 500 – 2,000) that has the highest probability of success.
+   2. Therefore, the goal shifts to **exploitation**. We now must select a **manageable number** (e.g., 500 – 2,000) that has the **highest probability of success**.
 
 However, when reducing the top-ranked candidates we must balance potency with diversity. A method to do this is to apply Butina clustering at Tanimoto 0.6 and keep the ligand with best VSH ΔG at each cluster
 This approach intelligently balances the two competing priorities:
 1. **Diversity (The Clustering):**
-    * If we simply took the top 500 compounds by VSH score, we might end up with 500 molecules that are slight variations of the same 5 or 6 chemical scaffolds.
-    * This is an inefficient use of resources because they will likely have similar biological activity and properties (a concept known as an "activity cliff").
-    * By clustering the compounds based on structural similarity (Tanimoto similarity), we group these variations together.
+    * If we simply took the top 500 compounds by VSH score, we might end up with 500 molecules that are **slight variations** of the **same 5 or 6 chemical scaffolds**.
+    * This is an **inefficient use of resources** because they will likely have **imilar biological activity** and **properties** (a concept known as an **"activity cliff"**).
+    * By clustering the compounds based on **structural similarity** (**Tanimoto similarity**), we group these variations together.
 2. **Potency (The Selection):**
-    * Within each structural cluster, we then select the single compound with the best (most negative) VSH ΔG score.
-    * This member is considered the best representative of its chemical family.
+    * Within each **structural cluster**, we then select the **single compound** with the **best VSH ΔG score**.
+    * This member is considered the **best representative of its chemical family**.
 
-By taking one representative from each cluster, we ensure that the final selection of 500 - 2,000 compounds is composed of structurally distinct molecules, each with the highest predicted potency in its class.
+By taking **one representative from each cluster**, we ensure that the final selection of 500 - 2,000 compounds is composed of **structurally distinct molecules**, each with the **highest predicted potency** in its class.
 
 ### 5.5. Exports
 

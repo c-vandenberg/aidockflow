@@ -10,6 +10,7 @@ Another core contribution of our work is to refine the active learning loop wher
 # Contents
 <details>
    <summary><b>1. Data Ingestion & Curation</b></summary>
+   
    &nbsp; &nbsp; &nbsp; &nbsp; 1.1 [Retrieve High-Fidelity Actives](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#11-retrieve-high-fidelity-actives)<br>
    &nbsp; &nbsp; &nbsp; &nbsp; 1.2 [Split High-Fidelity Actives Data](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#12-split-high-fidelity-actives-data)<br>
    &nbsp; &nbsp; &nbsp; &nbsp; 1.3 [Build “Druglike-Centroid Library”](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#13-build-druglike-centroid-library)<br>
@@ -19,14 +20,46 @@ Another core contribution of our work is to refine the active learning loop wher
    
 <details>
    <summary><b>2. Featurization (Round 0 Initially)</b></summary>
-   &nbsp; &nbsp; &nbsp; &nbsp; 2.1 []()<br>
-   &nbsp; &nbsp; &nbsp; &nbsp; 2.2 []()<br>
-   &nbsp; &nbsp; &nbsp; &nbsp; 2.3 []()<br>
-   &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; 2.3.1 []()<br>
-   &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; 2.3.2 []()<br>
-   &nbsp; &nbsp; &nbsp; &nbsp; 2.4 []()<br>
-   &nbsp; &nbsp; &nbsp; &nbsp; 2.5 []()<br>
-   &nbsp; &nbsp; &nbsp; &nbsp; 2.6 []()<br>
+   
+   &nbsp; &nbsp; &nbsp; &nbsp; 2.1 [Canonicalize Ligands and Add Explicit Hydrogens](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#21-canonicalize-ligands-and-add-explicit-hydrogens)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 2.2 [Generate Graph Objects & Attach Initial Labels](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#22-generate-graph-objects--attach-initial-labels)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 2.3 [Create Cumulative Training Dataset (`graphs_master.pt`)](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#23-create-cumulative-training-dataset-graphs_masterpt)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 2.4 [Create 3-D Conformers](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#24-create-3-d-conformers)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 2.5 [Cache Fingerprints (1024-Bit ECFP4)](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#25-cache-fingerprints-1024-bit-ecfp4)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 2.4 [Create “Seen” Hash-Set](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#26-create-seen-hash-set)<br>
+</details>
+
+<details>
+   <summary><b>3. Surrogate GNN Model Training & Tuning</b></summary>
+   
+   &nbsp; &nbsp; &nbsp; &nbsp; 3.1 [Model Choice (Round 0 Only)](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#31-model-choice-round-0-only)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 3.2 [Bayesian/Monte-Carlo Hyperparameter Search (Round 0 Only)](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#32-bayesianmonte-carlo-hyperparameter-search-round-0-only)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 3.3 [Training/Fine-Tuning](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#33-trainingfine-tuning)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; 3.3.1 [Round 0](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#331-round-0)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; &nbsp; 3.3.2 [Rounds ≥ 1 — “Light Fine-Tune”](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#332-rounds--1--light-fine-tune)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 3.4 [Inference](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#34-inference)<br>
+</details>
+
+<details>
+   <summary><b>4. Active Learning Loop (VSX-Derived Labels)</b></summary>
+   
+   &nbsp; &nbsp; &nbsp; &nbsp; 4.1 [Candidate Selection]()<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 4.2 [Featurise Previously Unseen Ligands (Canonicalize, Generate Graph Object, Create 3-D Conformers, Cache Fingerprints & Update “Seen” Hash-Set)]()<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 4.3 [VSX Docking (Fast Rosetta Run)]()<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 4.4 [Calculate ΔG & Add Labels]()<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 4.5 [Add Labels to Cumulative Training Pool]()<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 4.6 [Convergence Check]()<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 4.7 [Build Next Round Training Dataset (If Not Converged)]()<br>
+</details>
+
+<details>
+   <summary><b>5. High-Precision Docking & Post-Processing</b></summary>
+   
+   &nbsp; &nbsp; &nbsp; &nbsp; 5.1 [Candidate List]()<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 5.2 [VSH Docking]()<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 5.3 [Medicinal Chemistry Filters]()<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 5.4 [Clustering & Diversity]()<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 5.5 [Exports]()<br>
 </details>
 
 

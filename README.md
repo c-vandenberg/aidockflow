@@ -131,3 +131,134 @@ The steps to create the round 0 training dataset, and the validation/testing dat
 A `.smi` file is plain text, tab-separated list of molecules:
   * First column – SMILES string
   * Second column – InchiKey
+
+### 1.5. Prepare Target Structure
+1. Target to be defined by Uniprot Accession Number in training config file.
+2. Download PDB or AlphaFold model (target source database to be defined in training config file).
+3. Use PDBFixer to add missing residues/atoms, assign bonds, and remove water molecules.
+4. Use `propka` to add pH 7.4 protonation.
+5. Use OpenBabel to add hydrogens.
+6. Energy-minimize side chains with Rosetta FastRelax (2,000 cycles, coordinates constraints).
+7. Convert to PDBQT with AutoDockTools script (`prepare_receptor4.py`).
+8. Store copy of relaxed target in both PDB and PDBQT files (`target_prepped.pdb` and `target_prepped.pdbqt`).
+
+## 2. Featurization (Round 0 Initially)
+**Data Type Conversions:**
+1. SMILES → Graphs (for GNN machine learning).
+2. SMILES → ETKDG conformer in SDF files (for docking).
+3. SMILES → 1024-bit ECFP4 (for clustering, similarity searches, FNN pre-screen etc.)
+
+### 2.1. Canonicalize Ligands and Add Explicit Hydrogens
+1. Load SMILES from training (and validation and testing if round 0) `.smi` files, convert to `rdkit.Mol` objects (`Chem.MolFromSmiles(smi, sanitize=True)`).
+2. Check if each SMILES are correct by checking that `rdkit.Mol` object is not `None`.
+3. Add stereochemistry tags to each SMILES string via `rdkit.Chem.rdmolops.AssignStereochemistry(mol, cleanIt=True, force=True)`
+4. Add explicit hydrogens via `rdkit.Chem.AddHs(mol)`. This is needed for 3-D embedding and for graphs that encode hydrogen counts.
+5. Save cleaned SMILES as `cleaned_round0_full_train.smi.gz`, `cleaned_full_val.smi.gz`, and `cleaned_full_test.smi.gz`.
+
+### 2.2. Generate Graph Objects & Attach Initial Labels
+Because the GNN needs node/edge features, we need to build graph objects for each SMILES string.
+1. Load SMILES from `cleaned_round0_full_train.smi.gz`, `cleaned_full_val.smi.gz`, and
+`cleaned_full_test.smi.gz`.
+2. For every molecule, build an atom-bond graph with:
+   1. Element
+   2. Degree
+   3. Formal charge
+   4. Aromatic flag
+   5. Hybridization
+   6. Ring flag
+   7. Bond type
+   8. Conjugated ring flag
+3. Recommended libraries include PyTorch‑Geometric, DGL or Chemprop (they all expose a “Mol ⇒ Data” helper).
+4. Each molecule graph needs to have its InChiKey assigned to it for identification, along with a label. (See below).
+5. Serialize the list with `torch.save` or `joblib` (~3 GB per 1 million molecules, compressible) to `graphs_round0_train.pt`, `graphs_val.pt`, and `graphs_test.pt` (binary; tens of GB).
+
+The `graphs_*.pt` files are single PyTorch files that holds the following triplet for every ligand processed in round 0:
+1. **InChiKey** (attribute `inchi_key`): Immutable ID used throughout the pipeline.
+2. **Graph Object**: Atoms/bonds and their features for the GNN.
+3. **Label** (attribute `y`): 1 = binder, 0 = non-binder, –1 = masked/unknown.
+
+The graph object will be a PyG `torch_geometric.data.Data` instance. The InChiKey will be the `Data.inchi_key` attribute that is a Python `str` data type. The Label will be the `Data.y` attribute that is a Python `int` data type that has been cast to a `torch.long` data type.
+
+For the initial labels, we want to set all the seed positives as binders (1), and all others as non-binders (0) initially:
+1. `seed_positives = set(train_pos.parquet.inchi_key)`
+2. For every `mol_graph`, if `inchi_key` in `seed_positives`:
+   1. `mol_graph.y = tensor([1])`
+3. Else:
+   1. `mol_graph.y = tensor([0])`
+
+We will also do the same for `graphs_val.pt`, and `graphs_test.pt`, but their labels will remain frozen for the entire training regime.
+
+### 2.3. Create Cumulative Training Dataset (`graphs_master.pt`)
+The `graphs_master.pt` file is a single PyTorch file that holds the same triplet for every ligand processed so far.
+
+For the initial `graphs_master.pt` file we will simply make a copy of `graphs_round0_train.pt` (N.B. we do not include any ligands from the validation or test datasets. However, this will be the cumulative training dataset and at the end of each round we will append all the new ligand graphs used in that round (i.e. `graphs_round{r}_train.pt`), as well as update any newly calculated labels from that training round.
+
+### 2.4. Create 3-D Conformers
+Because fast VSX docking needs initial 3-D coordinates, we must convert each ligand to an ETKDG conformer.
+1. Load SMILES from `cleaned_round0_full_train.smi.gz`.
+2. Convert each SMILES string to an `rdkit.Mol` object via `rdkit.Chem.AllChem.EmbedMolecule`.
+3. Energy-minimize with 200‑step MMFF or UFF minimization. This is a good enough minimization with minimal computational overhead.
+4. Batch-write ligands to 50 SDF files, with 10,000 ligands per SDF file, and `gzip` each file. This format is preferred by Rosetta’s “multi-ligand” mode.
+5. E.g. `batch_0001.sdf.gz`, `batch_0001.sdf.gz`, etc. (~20 MB each).
+
+### 2.5. Cache Fingerprints (1024-Bit ECFP4)
+By caching each molecule as a 1024-bit ECFP4, we can do fast similarity searches, clustering, and an optional FNN pre-screen.
+1. Load SMILES from `cleaned_round0_full_train.smi.gz`.
+2. Compute 1024-bit ECFP4 for each ligand and pack into NumPy `uint8` arrays via `fps = [np.packbits(AllChem.GetMorganFingerprintAsBitVect(Chem.MolFromSmiles(smiles) ,2,1024)) for smiles in round0_candidates]`.
+3. Save as `round0_train.fp.npy`.
+4. N.B. If we later want to compare chemical space coverage between train and test, we can also load `cleaned_full_val.smi.gz` and `cleaned_full_test.smi.gz` and save to `val.fp.npy` and `test.fp.npy` respectively.
+
+### 2.6. Create “Seen” Hash-Set
+We need to keep track of what training ligands the GNN will have seen after round 0. This includes all training molecules that have already been converted to graphs and ETKDG conformers.
+**N.B.** To avoid data leakage we do not include validation or test ligands as they are not to be used in the active learning loop.
+1. **Read the Training Ligand InChiKeys Just Processed:**
+   1. Load InChiKeys from `cleaned_round0_full_train.smi.gz`.
+2. **Save InChiKeys to Disk:**
+   1. Insert every key into an in-memory `set()` and then serialize it to disk by saving to `seen_inchikeys.pkl.gz`.
+  
+## 3. Surrogate GNN Model Training & Tuning
+At a high-level, our active learning technique can be broken down into:
+1. **Surrogate GNN Model Training & Tuning**
+   1. The surrogate GNN model is continuously retrained with ~500,000 molecules/ligands at the start of each full training iteration.
+2. **Active Learning Loop (VSX-Derived Labels)**
+   1. The GNN model that just finished training is then used in the active learning loop to pick the next ~500,000 molecules → Dock them with VSX → Calculate each ligand’s ΔG → Turn the ΔG scores into new labels (binders=1, non-binders=0, masked=-1).
+  
+For the Surrogate GNN Model Training & Tuning, round 0 will differ from subsequent rounds:
+1. **Round 0:**
+   1. We first train the GNN (GNN0) using the graphs from `graphs_round0_train.pt`.
+   2. As per step 2.2:
+      1. The seed positives (i.e. the “high-fidelity actives” from step 1.1) are given the label 1 as they are known binders.
+      2. The centroid molecules are assumed to be non-binders and are given the label 0.
+2. **Round k (≥ 1):**
+   1. We retrain the GNN and fine-tune using everything that has been labelled from the previous round’s active learning loop.
+  
+### 3.1. Model Choice (Round 0 Only)
+1. Can use Direct-MPNN from Chemprop, use 3-4 message-passing steps, and a hidden size of 300.
+2. The Pytorch-Geometric equivalent is `GINConv` or `GATv2Conv`.
+
+### 3.2. Bayesian/Monte-Carlo Hyperparameter Search (Round 0 Only)
+1. Prepare a stratified 80/20 split of the labelled set `graphs_round0_train.pt`.
+2. Define initial hyperparameters as:
+   1. `hidden_size` = 300
+   2. `message_depth` = 3
+   3. `dropout` = 0.2
+   4. `learning_rate` = 3e-4
+   5. `weight_decay` = 1e-6
+3. Use a small Optuna or Ray Tune search to find the Area Under the Receiver Operating Characteristic curve (AUROC) on the 20% validation slice (binary 1 v 0), with a TPE or BOHB sampler.
+4. Do ~25 trails, with each trial training for 10 epochs with early stopping.
+5. Pick best AUROC trial and dump its parameters (hidden size, message depth, dropout, learning rate, weight decay) to `best_hyperparams.json`.
+6. Feed these `best_hyperparams.json` values into the training regime for round 0 and disable further hyperparameter searching. Only the weights are to evolve in later rounds, not the hyperparameters or model architecture.
+
+### 3.3. Training/Fine-Tuning
+In a molecule-focused GNN, the encoder is a stack of message-passing layers. Each layer:
+1. Collect information from every atom’s neighbours.
+2. Merges (e.g. sum/mean/attention) those messages.
+3. Updates the atom’s hidden vector.
+   
+After `k` rounds every atom’s vector encodes information from atoms that are up to `k` bonds away.
+
+In its final layer, the encoder pools all atom vectors into one fixed-length molecule vector, usually by a simple sum or mean. The output head is the final classification or regression function that sits on top of this final encoder layer. It takes the single fixed-length molecule vector as input.
+
+In most GNN libraries, this output head is just a two-layer MLP that turns this final vector into either:
+  * A single sigmoid score (in our case binder/non-binder).
+  * A single linear value (e.g. Predicted ΔG, Kd etc.).

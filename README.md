@@ -376,3 +376,113 @@ The general steps are:
 It should be noted that inference will be running while VSX docking from the previous round is still running on CPU. Therefore, GPU and CPU work will overlap, and GPU inference is not the bottleneck; VSX docking is.
 
 ## 4. Active Learning Loop (VSX-Derived Labels)
+### 4.1. Candidate Selection
+1. For current round `r`, open `scores_round{r}.csv` from current round inference.
+2. Sort by GNN score (high → low) and extract top 250,000 ligands.
+3. Randomly sample 250,000 SMILES from `round{r}_unsampled_centroid_pool.smi.gz` and save unsampled SMILES to `round{r+1}_unsampled_centroid_pool.smi.gz`. This will be used to sample the next 250,000 SMILES in the next active learning iteration.
+4. Combine top GNN-scored ligands from 2. and sample ligands from 3. to give 500,000 ligands for the upcoming VSX run.
+5. Save to `round{r}_active_learning.smi.gz` for round `r`.
+
+### 4.2. Featurise Previously Unseen Ligands (Canonicalize, Generate Graph Object, Create 3-D Conformers, Cache Fingerprints & Update “Seen” Hash-Set)
+1. Read `round{r}_active_learning.smi.gz` and compare each InChiKey to the “seen” hash- set `seen_inchikeys.pkl.gz`.
+2. Create `graphs_round{r}_train.pt` file.
+3. For every new ligand:
+   1. Clean/canonicalize SMILES as per Step 2.1.
+   2. Build graph object as per Step 2.2., append to both `graphs_round{r+1}_train.pt` and `graphs_master.pt`.
+   3. Generate ETKDG conformer as per Step 2.3. and collect into the SDF batches.
+   4. Compute and store ECFP4 fingerprint as per Step 2.4.
+   5. Append InChiKey to `seen_inchikeys.pkl.gz`.
+  
+### 4.3. VSX Docking (Fast Rosetta Run)
+1. Convert each SMILES in `round{r}_candidates.smi.gz` to a 3D SDF as per Step 2.3.
+2. Bundle the ligands into 50 SDF files of 10,000 ligands each. This format is preferred by Rosetta’s “multi-ligand” mode.
+3. On the cluster: submit 50 array jobs, each job uses for example 20 CPU cores. Rosetta’s VSX protocol (vsx.xml) docks one ligand in about 2 ½ minutes on one core → ~25 ligands / core / hour.
+4. Rosetta writes a `.sc` score table for every SDF batch (one row per ligand, ΔG in kcal mol⁻¹). This will give many `score_XXXXX.sc` tables.
+
+### 4.4. Calculate ΔG & Add Labels
+1. Merge the 50 score tables into one spreadsheet (ligand ID + ΔG).
+2. Sort by ΔG (more negative = better):
+   1. **Top 10% (50,000 ligands)**** → Label 1 (“binder”).
+   2. **Bottom 40% (200,000 ligands)** → Label 0 (“non-binder”).
+   3. **Middle 50% (250,000 ligands)** → Label -1 (“ignore”).
+   4. **N.B.** We could make the top 10% cutoff tunable or dynamic, like the Zhou et al. paper where the cutoff becomes stricter over time. For example, we could start at 10% and gradually decrease it to 5% or 1% in later rounds to focus the model on identifying only the most potent binders as the search progresses.
+3. **BUT**, if any ligand is in the original high fidelity Kd dataset (`train_pos.parquet`), ensure it stays label 1 even if its ΔG isn’t in the top 10%.
+4. Save the table as CSV file `round{r}_active_learning_labels.csv` with four columns:
+   1. **InChiKey**
+   2. **SMILES**
+   3. **ΔG**
+   4. **Label**
+  
+### 4.5. Add Labels to Cumulative Training Pool
+1. For every ligand in `round{r}_active_learning_labels.csv` locate its graph object in `graphs_master.pt`.
+2. Attach the integer label (1/0/-1) to that graph.
+
+### 4.6. Convergence Check
+To check for convergence, we will be checking three measures:
+1. **Surrogate GNN Best Percentile Score:** This reflects how much the surrogate GNN still believes there are unexplored “good” regions after this round.
+2. **VSX ΔG Best Percentile:** This tells us whether the highly scored GNN compounds for this round survive the first physics filter.
+3. **Round Limit:** Predefined maximum round limit.
+
+<br>
+  <div align="center">
+    <table>
+    <thead>
+      <tr>
+        <th>Metric / Check</th>
+        <th>How to Measure</th>
+        <th>Why It Matters (Rationale)</th>
+        <th>Action / Output (After Each Round)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>Surrogate GNN Best Percentile Score</strong> (Early Enrichment)</td>
+        <td>
+          <ol>
+            <li>Take <code>scores_round{r}.csv</code> (all remaining centroids).</li>
+            <li>Sort descending by the GNN probability (sigmoid output).</li>
+            <li>Grab the top 0.1% (e.g., 10,000 ligands if 10M are left).</li>
+            <li>Record their mean and median score.</li>
+          </ol>
+        </td>
+        <td>If the model keeps discovering higher-scoring ligands, the search space still has fertile regions.</td>
+        <td>Calculated from <code>scores_round{r}.csv</code> and used in the stopping rule below.</td>
+      </tr>
+      <tr>
+        <td><strong>Artefact Stopping Rule</strong> (Tunable in Config File)</td>
+        <td>
+            Compute Δ(mean-score) relative to the previous round.
+            <br><br>
+            <strong>Stop criterion:</strong> <code>abs(Δ) &lt; 0.01</code> (scores are 0-1) for two consecutive rounds.
+        </td>
+        <td>Provides an automatic stopping rule to terminate the search when enrichment plateaus.</td>
+        <td>Append a results line to <code>progress.tsv</code>.</td>
+      </tr>
+      <tr>
+        <td><strong>Fast-dock (VSX) Best Percentile</strong></td>
+        <td>
+          <ol>
+            <li>Concatenate all <code>score_*.sc</code> files from the latest VSX job.</li>
+            <li>Sort ascending by Rosetta ΔG (kcal mol<sup>-1</sup>, more negative is better).</li>
+            <li>Take the top 0.1%.</li>
+            <li>Record their mean and median ΔG.</li>
+          </ol>
+           <strong>Stop criterion:</strong> <code>abs(Δ) &lt; 0.1</code> kcal mol<sup>-1</sup> for two rounds.
+        </td>
+        <td>This is the first physics-based sanity check. If these numbers plateau, your "cheap" GNN search is no longer finding better physical binders.</td>
+        <td>Append to <code>progress.tsv</code> and write a human-readable line to <code>train.log</code>.</td>
+      </tr>
+      <tr>
+        <td><strong>Round Limit (Safety Brake)</strong></td>
+        <td>
+            Count the number of completed rounds.
+            <br><br>
+            <strong>Hard cap:</strong> E.g., 10 rounds.
+        </td>
+        <td>Prevents endless runs if metrics fluctuate around the stopping threshold without converging.</td>
+        <td>Checked before starting a new round; logged in <code>progress.tsv</code>.</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+<br>

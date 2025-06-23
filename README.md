@@ -43,23 +43,28 @@ Another core contribution of our work is to refine the active learning loop wher
 <details>
    <summary><b>4. Active Learning Loop (VSX-Derived Labels)</b></summary>
    
-   &nbsp; &nbsp; &nbsp; &nbsp; 4.1 [Candidate Selection]()<br>
-   &nbsp; &nbsp; &nbsp; &nbsp; 4.2 [Featurise Previously Unseen Ligands (Canonicalize, Generate Graph Object, Create 3-D Conformers, Cache Fingerprints & Update “Seen” Hash-Set)]()<br>
-   &nbsp; &nbsp; &nbsp; &nbsp; 4.3 [VSX Docking (Fast Rosetta Run)]()<br>
-   &nbsp; &nbsp; &nbsp; &nbsp; 4.4 [Calculate ΔG & Add Labels]()<br>
-   &nbsp; &nbsp; &nbsp; &nbsp; 4.5 [Add Labels to Cumulative Training Pool]()<br>
-   &nbsp; &nbsp; &nbsp; &nbsp; 4.6 [Convergence Check]()<br>
-   &nbsp; &nbsp; &nbsp; &nbsp; 4.7 [Build Next Round Training Dataset (If Not Converged)]()<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 4.1 [Candidate Selection](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#41-candidate-selection)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 4.2 [Featurise Previously Unseen Ligands (Canonicalize, Generate Graph Object, Create 3-D Conformers, Cache Fingerprints & Update “Seen” Hash-Set)](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#42-featurise-previously-unseen-ligands-canonicalize-generate-graph-object-create-3-d-conformers-cache-fingerprints--update-seen-hash-set)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 4.3 [VSX Docking (Fast Rosetta Run)](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#43-vsx-docking-fast-rosetta-run)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 4.4 [Calculate ΔG & Add Labels](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#44-calculate-%CE%B4g--add-labels)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 4.5 [Add Labels to Cumulative Training Pool](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#45-add-labels-to-cumulative-training-pool)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 4.6 [Convergence Check](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#46-convergence-check)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 4.7 [Build Next Round Training Dataset (If Not Converged)](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#47-build-next-round-training-dataset-if-not-converged)<br>
 </details>
 
 <details>
    <summary><b>5. High-Precision Docking & Post-Processing</b></summary>
    
-   &nbsp; &nbsp; &nbsp; &nbsp; 5.1 [Candidate List]()<br>
-   &nbsp; &nbsp; &nbsp; &nbsp; 5.2 [VSH Docking]()<br>
-   &nbsp; &nbsp; &nbsp; &nbsp; 5.3 [Medicinal Chemistry Filters]()<br>
-   &nbsp; &nbsp; &nbsp; &nbsp; 5.4 [Clustering & Diversity]()<br>
-   &nbsp; &nbsp; &nbsp; &nbsp; 5.5 [Exports]()<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 5.1 [Candidate List](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#51-candidate-list)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 5.2 [VSH Docking](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#52-vsh-docking)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 5.3 [Medicinal Chemistry Filters](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#53-medicinal-chemistry-filters)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 5.4 [Clustering & Diversity](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#54-clustering--diversity)<br>
+   &nbsp; &nbsp; &nbsp; &nbsp; 5.5 [Exports](https://github.com/c-vandenberg/aidockflow?tab=readme-ov-file#55-exports)<br>
+</details>
+
+<details>
+   <summary><b>6. Visualization & Reporting</b></summary>
+   
 </details>
 
 

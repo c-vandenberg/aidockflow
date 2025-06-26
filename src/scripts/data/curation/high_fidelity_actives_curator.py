@@ -42,8 +42,8 @@ def main():
         raise ValueError('You must provide a `uniprot_id` and `bioactivity_measures` in the configuration file.')
 
     os.makedirs(os.path.dirname(data_config.get('standardized_actives_path', '../data/processed')), exist_ok=True)
-    os.makedirs(os.path.dirname(data_config.get('log_path', '../var/log')), exist_ok=True)
-    logger = configure_logger(log_path=data_config.get('log_path'))
+    os.makedirs(os.path.dirname(data_config.get('data_curation_log_path', '../var/log')), exist_ok=True)
+    logger = configure_logger(log_path=data_config.get('data_curation_log_path'))
 
     actives_curator: HighFidelityActivesCurator = HighFidelityActivesCurator(config=data_config, logger=logger)
     actives_curator.run()

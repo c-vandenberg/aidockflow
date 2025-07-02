@@ -4,7 +4,8 @@ import os
 import argparse
 from typing import Dict, Any
 
-from ml_training_base import configure_logger, load_config
+from ml_training_base import configure_multi_level_logger, load_config
+
 from src.data.curation.actives_curator import HighFidelityActivesCurator
 
 
@@ -37,16 +38,18 @@ def main():
 
     config: Dict[str, Any] = load_config(args.config_file_path)
     data_config: Dict[str, Any] = config.get('data', {})
+    log_dir = data_config.get('data_curation_log_path', '../var/log/data_curation')
 
     if not all([data_config.get('uniprot_id'), data_config.get('bioactivity_measures')]):
         raise ValueError('You must provide a `uniprot_id` and `bioactivity_measures` in the configuration file.')
 
     os.makedirs(os.path.dirname(data_config.get('standardized_actives_path', '../data/processed')), exist_ok=True)
-    os.makedirs(os.path.dirname(data_config.get('data_curation_log_path', '../var/log')), exist_ok=True)
-    logger = configure_logger(log_path=data_config.get('data_curation_log_path'))
+    os.makedirs(log_dir, exist_ok=True)
+    logger = configure_multi_level_logger(log_dir=log_dir)
 
     actives_curator: HighFidelityActivesCurator = HighFidelityActivesCurator(config=data_config, logger=logger)
     actives_curator.run()
+
 
 if __name__ == "__main__":
     main()

@@ -1,15 +1,15 @@
 import os
 from typing import List
 
-from ml_training_base import configure_logger, write_strings_to_file
-from biochemical_data_connectors import ChEMBLBioactivesConnector, PubChemBioactivesConnector
+from ml_training_base import configure_multi_level_logger, write_strings_to_file
+from biochemical_data_connectors import ChemblBioactivesConnector, PubChemBioactivesConnector
 
 
 def main():
     os.makedirs('../var/log', exist_ok=True)
-    logger = configure_logger('../var/log/data_ingestion.log')
+    logger = configure_multi_level_logger('../var/log/data_ingestion.log')
 
-    chembl_extractor = ChEMBLBioactivesConnector(bioactivity_threshold=1000, logger=logger)
+    chembl_extractor = ChemblBioactivesConnector(bioactivity_threshold=1000, logger=logger)
     pubchem_extractor = PubChemBioactivesConnector(bioactivity_threshold=1000, logger=logger)
 
     chembl_bioactives: List[str] = chembl_extractor.get_bioactive_compounds(target_uniprot_id='P00533')

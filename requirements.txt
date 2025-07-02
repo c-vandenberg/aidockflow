@@ -1,4 +1,6 @@
 biochemical_data_connectors==3.2.0
-ml_training_base==0.3.4
+ml_training_base==0.4.0
+numpy==2.1.3
 pandas==2.2.3
+rdkit==2025.3.2
 validators==0.35.0

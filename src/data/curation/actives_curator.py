@@ -2,7 +2,6 @@ import logging
 from typing import Dict, List
 
 import pandas as pd
-
 from biochemical_data_connectors import (
     BindingDbBioactivesConnector,
     ChemblBioactivesConnector,
@@ -12,11 +11,12 @@ from biochemical_data_connectors import (
 )
 from biochemical_data_connectors.models import BioactiveCompound
 
+from src.data.curation.base_curator import BaseCurator
 
-class HighFidelityActivesCurator:
+
+class HighFidelityActivesCurator(BaseCurator):
     def __init__(self, config: Dict, logger: logging.Logger):
-        self._config = config
-        self._logger = logger
+        super().__init__(config=config,logger=logger)
         self._standardizer = CompoundStandardizer(logger=logger)
 
     def run(self):
@@ -67,6 +67,9 @@ class HighFidelityActivesCurator:
         standardized_actives: List[BioactiveCompound] = []
         for compound in raw_actives:
             standardized_data = self._standardizer.standardize_smiles(compound.smiles)
+            if not standardized_data:
+                self._logger.error(f'Error standardizing SMILES for {compound.smiles}')
+
             compound.smiles = standardized_data.get('smiles')
             compound.standardized_inchikey = standardized_data.get('inchi_key')
             standardized_actives.append(compound)

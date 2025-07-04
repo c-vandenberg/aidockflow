@@ -7,6 +7,7 @@ from typing import List, Dict, Any
 from ml_training_base import configure_multi_level_logger, load_config
 
 from src.data.curation.actives_curator import HighFidelityActivesCurator
+from src.data.curation.zinc_curator import ZincDatabaseCurator
 from src.data.curation.centroid_curator import CentroidLibraryCurator
 from src.data.loading.actives_loader import HighFidelityActivesDataLoader
 
@@ -76,7 +77,8 @@ def main():
     )
     actives_curator.run()
 
-    # 1.2. Split High-Fidelity Actives
+    # 1.2. Split High-Fidelity Actives and Save Train, Validation, and Test Sets
+    actives_dir = os.path.dirname(actives_path)
     random_state = data_config.get('random_state', 4)
     actives_loader: HighFidelityActivesDataLoader = HighFidelityActivesDataLoader(
         test_split=data_config.get('test_split', 0.15),
@@ -87,7 +89,15 @@ def main():
     )
     actives_loader.setup_datasets()
 
-    # 1.3. Build ZINC15 “Druglike-Centroid Library”
+    actives_loader.get_train_dataset().to_parquet(f'{actives_dir}/train_pos.parquet')
+    actives_loader.get_valid_dataset().to_parquet(f'{actives_dir}/val_pos.parquet')
+    actives_loader.get_test_dataset().to_parquet(f'{actives_dir}/test_pos.parquet')
+
+    # 1.3. Build ZINC SMILES database
+    zinc_curator: ZincDatabaseCurator = ZincDatabaseCurator(config=data_config, logger=data_curation_logger)
+    zinc_curator.run()
+
+    # 1.4. Build ZINC “Druglike-Centroid Library”
     centroid_curator: CentroidLibraryCurator = CentroidLibraryCurator(config=data_config, logger=data_curation_logger)
     centroid_curator.run()
 

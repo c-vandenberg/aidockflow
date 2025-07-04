@@ -9,7 +9,7 @@ def compress_and_delete_file(uncompressed_path: str, compressed_path: str, logge
     # 1. Compress file
     try:
         with open(uncompressed_path, 'rb') as file_in:
-            with gzip.open(compressed_path, 'wb', encoding='utf-8') as file_out:
+            with gzip.open(compressed_path, 'wb') as file_out:
                 shutil.copyfileobj(file_in, file_out)
         logger.debug(f"Successfully compressed {uncompressed_path} to {compressed_path}")
     except Exception as e:

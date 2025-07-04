@@ -1,20 +1,11 @@
 import os
-import shutil
-import subprocess
-import stat
-import shlex
-import glob
 import gzip
 import logging
 from typing import Dict, List, Any
 
 import pandas as pd
-import validators
-from functools import partial
-from concurrent.futures import ThreadPoolExecutor
 from rdkit import Chem
 from rdkit.Chem import AllChem, Descriptors
-from rdkit.ML.Cluster import Butina
 from biochemical_data_connectors import CompoundStandardizer
 
 from src.data.curation.base_curator import BaseCurator
@@ -43,29 +34,30 @@ class CentroidLibraryCurator(BaseCurator):
             return
 
         round_num = 1
-        max_in_memory_size = self._config.get('max_in_memory_centroids', 2_000_000)
+        max_in_memory_size = self._config.get('max_in_memory_centroids', 35_000)
 
         while True:
-            centroids_output_path = f'{centroids_raw_dir}/{round_num}_centroids.smi'
+            centroids_output_path = f'{centroids_raw_dir}/round_{round_num}_centroids.smi'
             num_centroids = self._run_clustering_round(
                 smiles_input_path=smiles_input_path,
-                centroids_output_path=centroids_output_path
+                centroids_output_path=centroids_output_path,
+                round_num=round_num
             )
 
             if num_centroids <= max_in_memory_size:
                 self._logger.info(
                     f'Number of centroids ({num_centroids}) is small enough for final in-memory clustering.'
                 )
-                final_sub_centroids_path = centroids_output_path
+                final_sub_centroids_path = centroids_output_path + '.gzip'
                 break
 
             # Prepare for next clustering round
-            smiles_input_path = centroids_output_path
-            round_num =+ 1
+            smiles_input_path = centroids_output_path + '.gzip'
+            round_num += 1
 
         # 2. Perform a final clustering on the aggregated sub-centroids, which now fit in memory.
         self._logger.info(f"Loading final sub-centroids from {final_sub_centroids_path} for final clustering...")
-        with gzip.open(final_sub_centroids_path, 'rb', encoding='utf-8') as centroids_file:
+        with gzip.open(final_sub_centroids_path, 'rb') as centroids_file:
             final_sub_centroids = [line.strip() for line in centroids_file]
 
         final_centroid_smiles = self._process_smiles_batch(
@@ -88,27 +80,29 @@ class CentroidLibraryCurator(BaseCurator):
                 'centroids_processed_path',
                 '../data/processed/ZINC20-3D-druglike-centroids/centroid_pool.parquet'
             )
+            os.makedirs(os.path.dirname(centroid_processed_path), exist_ok=True)
             self._logger.info(f"Saving {len(final_centroid_records)} final centroids to {centroid_processed_path}...")
 
             df_centroids = pd.DataFrame(final_centroid_records)
-            df_centroids.drop_duplicates(subset='inchikey')
+            df_centroids = df_centroids.drop_duplicates(subset='inchi_key')
 
             actives_parquet_path = self._config.get('standardized_actives_path')
             df_actives = pd.read_parquet(actives_parquet_path)
 
-            if df_actives:
-                df_centroids = df_centroids[df_centroids['inchikey'] != df_actives['standardized_inchikey']]
+            if not df_actives.empty:
+                active_keys = df_actives['standardized_inchikey']
+                df_centroids = df_centroids[~df_centroids['inchi_key'].isin(active_keys)]
 
             df_centroids.to_parquet(centroid_processed_path, index=False)
             self._logger.info("Centroid library construction complete.")
         else:
             self._logger.error("No centroids were selected after final clustering.")
 
-    def _run_clustering_round(self, smiles_input_path: str, centroids_output_path: str):
-        self._logger.info(f'Starting clustering round on file: {smiles_input_path}')
+    def _run_clustering_round(self, smiles_input_path: str, centroids_output_path: str, round_num: int):
+        self._logger.info(f'Starting clustering round {round_num} on file: {smiles_input_path}')
         uncompressed_centroids_path = centroids_output_path
         gzipped_centroids_path = centroids_output_path + '.gzip'
-        batch_size = self._config.get('clustering_batch_size', 1_000_000)
+        batch_size = self._config.get('clustering_batch_size', 35_000)
         tanimoto_cutoff = self._config.get('tanimoto_cluster_cutoff', 0.6)
         smiles_stream = stream_lines_from_gzip_file(smiles_input_path)
 
@@ -146,11 +140,12 @@ class CentroidLibraryCurator(BaseCurator):
 
     def _process_smiles_batch(self, smiles_batch: List[str], tanimoto_cutoff: float) -> List[str]:
         fingerprints, valid_smiles = [], []
+        morg_generator = Chem.rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=1024)
         for smiles in smiles_batch:
             mol = Chem.MolFromSmiles(smiles)
             if mol:
                 valid_smiles.append(smiles)
-                fingerprints.append(AllChem.GetMorganFingerprintAsBitVect(mol, 2, nBits=1024))
+                fingerprints.append(morg_generator.GetFingerprint(mol))
 
         if not fingerprints:
             self._logger.error('No fingerprints generated for SMILES batch')
@@ -167,7 +162,7 @@ class CentroidLibraryCurator(BaseCurator):
                 cluster_smiles = [valid_smiles[idx] for idx in cluster_indices]
                 smallest_mol_smiles = min(
                     cluster_smiles,
-                    key=lambda smiles: Descriptors.MolWt(Chem.MolFromSmiles(smiles))
+                    key=lambda smiles_str: Descriptors.MolWt(Chem.MolFromSmiles(smiles_str))
                 )
                 sub_centroids.append(smallest_mol_smiles)
             except Exception as e:

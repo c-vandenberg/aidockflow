@@ -1,8 +1,6 @@
 from typing import List, Tuple, Any
 
-from rdkit import Chem, DataStructs
-from rdkit.Chem import AllChem, Descriptors
-from rdkit.Chem.rdMolDescriptors import MolToInchiKey
+from rdkit import DataStructs
 from rdkit.ML.Cluster import Butina
 
 
@@ -37,10 +35,12 @@ def butina_cluster(fingerprints: List[Any], tanimoto_cutoff: float) -> List[Tupl
         tanimoto_similarities = DataStructs.BulkTanimotoSimilarity(fingerprints[i], fingerprints[:i])
         dists.extend([1 - s for s in tanimoto_similarities])
 
+    distance_threshold = 1.0 - tanimoto_cutoff
+
     clusters = Butina.ClusterData(
         data=dists,
         nPts=n_fingerprints,
-        distThresh=tanimoto_cutoff,
+        distThresh=distance_threshold,
         isDistData=True
     )
 

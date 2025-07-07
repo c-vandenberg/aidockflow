@@ -1,16 +1,18 @@
 import os
 import gzip
+import faiss
 import logging
 from typing import Dict, List, Any
 
 import pandas as pd
+import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem, Descriptors
 from biochemical_data_connectors import CompoundStandardizer
 
 from src.data.curation.base_curator import BaseCurator
 from src.utils.file_utils import compress_and_delete_file, stream_lines_from_gzip_file
-from src.utils.clustering_utils import butina_cluster
+from src.utils.clustering_utils import faiss_butina_cluster
 
 
 class CentroidLibraryCurator(BaseCurator):
@@ -57,8 +59,7 @@ class CentroidLibraryCurator(BaseCurator):
 
         # 2. Perform a final clustering on the aggregated sub-centroids, which now fit in memory.
         self._logger.info(f"Loading final sub-centroids from {final_sub_centroids_path} for final clustering...")
-        with gzip.open(final_sub_centroids_path, 'rb') as centroids_file:
-            final_sub_centroids = [line.strip() for line in centroids_file]
+        final_sub_centroids = list(stream_lines_from_gzip_file(final_sub_centroids_path))
 
         final_centroid_smiles = self._process_smiles_batch(
             smiles_batch=final_sub_centroids,
@@ -151,9 +152,20 @@ class CentroidLibraryCurator(BaseCurator):
             self._logger.error('No fingerprints generated for SMILES batch')
             return []
 
+        fp_array = np.zeros((len(fingerprints), 1024 // 8), dtype=np.uint8)
+        for i, fp in enumerate(fingerprints):
+            # 1. Convert the RDKit ExplicitBitVect to a NumPy array of 0s and 1s
+            unpacked_fp = np.array(fp, dtype=np.uint8)
+
+            # 2. Use np.packbits to convert the 1024-bit array into a 128-byte array
+            packed_fp = np.packbits(unpacked_fp)
+
+            # 3. Assign the correctly shaped array
+            fp_array[i] = packed_fp
+
         # 2. Cluster the fingerprints to give clusters of compounds whose similarities are
         #    within the Tanimoto similarity threshold.
-        clusters = butina_cluster(fingerprints=fingerprints, tanimoto_cutoff=tanimoto_cutoff)
+        clusters = faiss_butina_cluster(fp_array=fp_array, tanimoto_cutoff=tanimoto_cutoff)
 
         # 3. Select the smallest molecule from each cluster as the sub-centroid of that cluster
         sub_centroids = []

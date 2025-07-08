@@ -1,17 +1,17 @@
 import os
-import gzip
-import faiss
+import time
 import logging
-from typing import Dict, List, Any
+from typing import Dict, List, Optional
 
 import pandas as pd
-import numpy as np
 from rdkit import Chem
-from rdkit.Chem import AllChem, Descriptors
+from rdkit.Chem import Descriptors
+from concurrent.futures.thread import ThreadPoolExecutor
 from biochemical_data_connectors import CompoundStandardizer
 
 from src.data.curation.base_curator import BaseCurator
 from src.utils.file_utils import compress_and_delete_file, stream_lines_from_gzip_file
+from src.utils.fingerprint_utils import smiles_to_morgan_fp, fingerprints_to_numpy
 from src.utils.clustering_utils import faiss_butina_cluster
 
 
@@ -36,7 +36,7 @@ class CentroidLibraryCurator(BaseCurator):
             return
 
         round_num = 1
-        max_in_memory_size = self._config.get('max_in_memory_centroids', 35_000)
+        max_in_memory_size = self._config.get('max_in_memory_centroids', 200_000_000)
 
         while True:
             centroids_output_path = f'{centroids_raw_dir}/round_{round_num}_centroids.smi'
@@ -63,7 +63,8 @@ class CentroidLibraryCurator(BaseCurator):
 
         final_centroid_smiles = self._process_smiles_batch(
             smiles_batch=final_sub_centroids,
-            tanimoto_cutoff=self._config.get('tanimoto_cluster_cutoff', 0.6)
+            tanimoto_cutoff=self._config.get('tanimoto_cluster_cutoff', 0.6),
+            round_num=round_num
         )
 
         # 3. Standardize final centroid SMILES and calculate InChIKey
@@ -103,26 +104,38 @@ class CentroidLibraryCurator(BaseCurator):
         self._logger.info(f'Starting clustering round {round_num} on file: {smiles_input_path}')
         uncompressed_centroids_path = centroids_output_path
         gzipped_centroids_path = centroids_output_path + '.gzip'
-        batch_size = self._config.get('clustering_batch_size', 35_000)
+        batch_size = self._config.get('clustering_batch_size', 100_000_000)
         tanimoto_cutoff = self._config.get('tanimoto_cluster_cutoff', 0.6)
         smiles_stream = stream_lines_from_gzip_file(smiles_input_path)
 
         total_centroids_written = 0
+        batch_num = 1
         with open(uncompressed_centroids_path, 'w') as outfile:
-            batch = []
+            batch_smiles = []
             for i, smiles in enumerate(smiles_stream):
-                batch.append(smiles)
-                if len(batch) >= batch_size:
+                batch_smiles.append(smiles)
+                if len(batch_smiles) >= batch_size:
                     self._logger.info(f'Processing batch starting at molecule {i+1-batch_size}...')
-                    sub_centroids = self._process_smiles_batch(smiles_batch=batch, tanimoto_cutoff=tanimoto_cutoff)
+                    sub_centroids = self._process_smiles_batch(
+                        smiles_batch=batch_smiles,
+                        tanimoto_cutoff=tanimoto_cutoff,
+                        round_num=round_num,
+                        batch_num=batch_num
+                    )
                     for sub_centroid_smiles in sub_centroids:
                         outfile.write(sub_centroid_smiles + '\n')
                     total_centroids_written += len(sub_centroids)
-                    batch = []
+                    batch_num += 1
+                    batch_smiles = []
 
-            if batch:
+            if batch_smiles:
                 self._logger.info("Processing final batch...")
-                sub_centroids = self._process_smiles_batch(smiles_batch=batch, tanimoto_cutoff=tanimoto_cutoff)
+                sub_centroids = self._process_smiles_batch(
+                    smiles_batch=batch_smiles,
+                    tanimoto_cutoff=tanimoto_cutoff,
+                    round_num=round_num,
+                    batch_num=batch_num
+                )
                 for sub_centroid_smiles in sub_centroids:
                     outfile.write(sub_centroid_smiles + '\n')
                 total_centroids_written += len(sub_centroids)
@@ -139,35 +152,61 @@ class CentroidLibraryCurator(BaseCurator):
 
         return total_centroids_written
 
-    def _process_smiles_batch(self, smiles_batch: List[str], tanimoto_cutoff: float) -> List[str]:
-        fingerprints, valid_smiles = [], []
-        morg_generator = Chem.rdFingerprintGenerator.GetMorganGenerator(radius=2, fpSize=1024)
-        for smiles in smiles_batch:
-            mol = Chem.MolFromSmiles(smiles)
-            if mol:
-                valid_smiles.append(smiles)
-                fingerprints.append(morg_generator.GetFingerprint(mol))
+    def _process_smiles_batch(
+        self,
+        smiles_batch: List[str],
+        tanimoto_cutoff: float,
+        round_num: int,
+        batch_num: Optional[int] = None
+    ) -> List[str]:
+        if batch_num is None:
+            batch_num = 'Final'
+
+        # Parallel SMILES -> (SMILES, 1024‑bit ECFP4 fingerprint)
+        mfp_start = time.time()
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            smiles_mfp_results = [
+                smiles_mfp for smiles_mfp in executor.map(smiles_to_morgan_fp, smiles_batch) if smiles_mfp
+            ]
+
+        mfp_end = time.time()
+        self._logger.info(
+            f'Round {round_num} Batch {batch_num}: SMILES to 1024‑bit ECFP4 fingerprint calculation time '
+            f'for {len(smiles_batch)}: {round(mfp_end - mfp_start)} seconds. '
+            f'Found {len(smiles_mfp_results)} valid 1024‑bit ECFP4 fingerprints'
+        )
+
+        if not smiles_mfp_results:
+            self._logger.error("No valid molecules in batch")
+            return []
+
+        # Unzip SMILES and 1024‑bit ECFP4 fingerprints
+        valid_smiles, fingerprints = zip(*smiles_mfp_results)
 
         if not fingerprints:
             self._logger.error('No fingerprints generated for SMILES batch')
             return []
 
-        fp_array = np.zeros((len(fingerprints), 1024 // 8), dtype=np.uint8)
-        for i, fp in enumerate(fingerprints):
-            # 1. Convert the RDKit ExplicitBitVect to a NumPy array of 0s and 1s
-            unpacked_fp = np.array(fp, dtype=np.uint8)
-
-            # 2. Use np.packbits to convert the 1024-bit array into a 128-byte array
-            packed_fp = np.packbits(unpacked_fp)
-
-            # 3. Assign the correctly shaped array
-            fp_array[i] = packed_fp
+        mfp_to_uint8_start = time.time()
+        fp_array = fingerprints_to_numpy(fingerprints)
+        mfp_to_uint8_end = time.time()
+        self._logger.info(
+            f'Round {round_num} Batch {batch_num}: 1024‑bit ECFP4 fingerprint (RDKit `ExplicitBitVect` objects) '
+            f'to (N, 128) uint8 NumPy array conversion time: {round(mfp_to_uint8_end - mfp_to_uint8_start)} seconds.'
+        )
 
         # 2. Cluster the fingerprints to give clusters of compounds whose similarities are
         #    within the Tanimoto similarity threshold.
+        cluster_start = time.time()
         clusters = faiss_butina_cluster(fp_array=fp_array, tanimoto_cutoff=tanimoto_cutoff)
+        cluster_end = time.time()
+        self._logger.info(
+            f'Round {round_num} Batch {batch_num}: {len(fingerprints)} fingerprints clustering time: '
+            f'{round(cluster_end - cluster_start)} seconds.'
+        )
 
         # 3. Select the smallest molecule from each cluster as the sub-centroid of that cluster
+        sub_centroid_start = time.time()
         sub_centroids = []
         for cluster_indices in clusters:
             try:
@@ -178,6 +217,16 @@ class CentroidLibraryCurator(BaseCurator):
                 )
                 sub_centroids.append(smallest_mol_smiles)
             except Exception as e:
-                self._logger.error(f'Failed to calculate sub-centroid for cluster. Error: {e}')
+                self._logger.error(f'Round {round_num} Batch {batch_num}: Failed to calculate sub-centroid for cluster. '
+                                   f'Error: {e}')
+        sub_centroid_end = time.time()
+        self._logger.info(
+            f'Round {round_num} Batch {batch_num}: Sub-centroid selection time: '
+            f'{round(sub_centroid_start - sub_centroid_end)} seconds.'
+        )
+
+        self._logger.info(
+            f'Round {round_num} Batch {batch_num}: {len(sub_centroids)} sub-centroids found.'
+        )
 
         return sub_centroids

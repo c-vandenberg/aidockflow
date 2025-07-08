@@ -36,38 +36,25 @@ def faiss_butina_cluster(fp_array: np.ndarray, tanimoto_cutoff: float) -> list[t
     quantizer = faiss.IndexBinaryFlat(dimension)
 
     # A common heuristic for the number of partitions is `sqrt(n_fingerprints)`
-    nlist = int(np.sqrt(n_fingerprints))
-
     # Ensure nlist is at least 1, as it cannot be 0.
-    if nlist < 1:
-        nlist = 1
+    nlist = max(1, int(np.sqrt(n_fingerprints)))  # ~√N rule
 
-    # Check for available GPUs and create the appropriate index type
-    if faiss.get_num_gpus() > 0:
-        print(f"GPU detected. Creating GpuIndexBinaryIVF with {nlist} partitions.")
-        res = faiss.StandardGpuResources()  # Allocates GPU resources
-        # Create a CPU IVF index first
-        cpu_ivf_index = faiss.IndexBinaryIVF(quantizer, dimension, nlist)
-        # Move it to the GPU
-        index = faiss.index_cpu_to_gpu(res, 0, cpu_ivf_index)
-    else:
-        print(f"No GPU detected. Using CPU IndexBinaryIVF with {nlist} partitions.")
-        # Create the standard CPU index
-        index = faiss.IndexBinaryIVF(quantizer, dimension, nlist)
+    # Create CPU index as fallback.
+    index = faiss.IndexBinaryIVF(quantizer, dimension, nlist)
 
     # The index must be trained on the data to learn the partitions
     if not index.is_trained:
         print(f"Training index on {n_fingerprints} fingerprints...")
-        index.train(x=fp_array)
+        index.train(fp_array)
 
     # Add the fingerprints to the index
     index.add(x=fp_array)
 
     # Set nprobe to balance speed and accuracy
     index.nprobe = 8
-    print(f"Index trained and populated. Using nprobe = {index.nprobe}")
+    print(f'Using CPU `IndexBinaryIVF`. Index trained and populated. (nlist={nlist}, nprobe = {index.nprobe})')
 
-    clusters = []
+    clusters: list[tuple[int, ...]] = []
     assigned = np.zeros(n_fingerprints, dtype=bool)
 
     for i in range(n_fingerprints):
@@ -75,7 +62,7 @@ def faiss_butina_cluster(fp_array: np.ndarray, tanimoto_cutoff: float) -> list[t
             continue
 
         # range_search is dramatically faster on the GPU
-        lims, D, I = index.range_search(x=fp_array[i:i + 1], radius=float(hamming_threshold))
+        lims, D, I = index.range_search(fp_array[i:i + 1], hamming_threshold)
 
         neighbor_indices = I[lims[0]:lims[1]]
 

@@ -8,7 +8,27 @@ from rdkit.ML.Cluster import Butina
 
 def faiss_butina_cluster(fp_array: np.ndarray, tanimoto_cutoff: float) -> list[tuple[int, ...]]:
     """
-    Performs Butina clustering using Faiss for high-speed neighbor search.
+    Performs an exact Butina clustering on a large set of binary fingerprints.
+    The goal is to group molecules where the Tanimoto similarity is greater than
+    or equal to a given tanimoto_cutoff.
+
+    This approach is used when the dataset size exceeds system memory capacity, so
+    RDKit `ExplicitBitVect` fingerprint objects with RDKit clustering cannot be used.
+
+    To achieve higher speed it uses a two-stage filtering strategy:
+    1. A Fast, "Generous" Search:
+        * For each potential cluster center (centroid), it uses the high-speed Faiss
+          library to find a broad list of candidate neighbors. This search uses a
+          dynamically calculated Hamming distance radius that is deliberately
+          overly generous to ensure no true neighbors are missed.
+    2. An Exact Tanimoto Verification:
+        * It then loops through the much smaller list of candidate neighbors and
+          applies the precise mathematical formula for Tanimoto similarity. Only
+          candidates that pass this exact check are included in the final cluster.
+
+    This two-stage filtering strategy avoids the memory and speed limitations of
+    traditional RDKit clustering while satisfying the strict requirement of using
+    the Tanimoto metric
 
     Parameters
     ----------
@@ -22,59 +42,105 @@ def faiss_butina_cluster(fp_array: np.ndarray, tanimoto_cutoff: float) -> list[t
     List[Tuple[int, ...]]
         A list of clusters, where each cluster is a tuple of integer indices.
     """
-    n_fingerprints = fp_array.shape[0]
+    # --- 1. Initialization ---
 
-    # The dimension is the number of bits in the fingerprints (e.g., 1024)
-    dimension = fp_array.shape[1] * 8
+    # `n_fingerprints`: The total number of molecules in the batch.
+    # `n_bytes`: The number of bytes per fingerprint (e.g., 128 for a 1024-bit fp).
+    n_fingerprints, n_bytes = fp_array.shape
 
-    # Convert the Tanimoto similarity cutoff to a Hamming distance threshold.
-    # For binary vectors, range searchg in Faiss uses Hamming distance.
-    hamming_threshold = int(dimension * (1.0 - tanimoto_cutoff))
+    # `dimension`: The total number of bits in each fingerprint (e.g., 1024).
+    dimension = n_bytes * 8
 
-    # The quantizer for an `IndexBinaryIVF` must also be a binary index.
-    # The `IndexBinaryFlat` quantizer will perform exact search for the binary vectors.
-    quantizer = faiss.IndexBinaryFlat(dimension)
+    # `index`: A Faiss CPU index for brute-force search on binary data, using
+    #          optimized C++ code.
+    index = faiss.IndexBinaryFlat(dimension)
+    index.add(fp_array) # Add the fingerprints to the index
 
-    # A common heuristic for the number of partitions is `sqrt(n_fingerprints)`
-    # Ensure nlist is at least 1, as it cannot be 0.
-    nlist = max(1, int(np.sqrt(n_fingerprints)))  # ~√N rule
+    # --- 2. Pre-computation for Efficiency ---
 
-    # Create CPU index as fallback.
-    index = faiss.IndexBinaryIVF(quantizer, dimension, nlist)
+    # Pre-compute pop-counts (number of 1-bits) once
+    # `popcounts`: A NumPy array storing the number of "on" bits (1s) for every
+    #              fingerprint in the batch. This is pre-computed once to avoid
+    #              recalculating it thousands of times inside the main loop.
+    popcounts = np.unpackbits(fp_array, axis=1).sum(1).astype(np.int16)
 
-    # The index must be trained on the data to learn the partitions
-    if not index.is_trained:
-        print(f"Training index on {n_fingerprints} fingerprints...")
-        index.train(fp_array)
+    # `max_pop`: The largest pop-count found in the entire batch. This is used
+    #            to calculate a "worst-case" search radius later.
+    max_pop = popcounts.max()
 
-    # Add the fingerprints to the index
-    index.add(x=fp_array)
-
-    # Set nprobe to balance speed and accuracy
-    index.nprobe = 8
-    print(f'Using CPU `IndexBinaryIVF`. Index trained and populated. (nlist={nlist}, nprobe = {index.nprobe})')
-
+    # `clusters`: The final list that will store the identified clusters.
     clusters: list[tuple[int, ...]] = []
+
+    # `assigned`: A boolean array to track which molecules have already been
+    #             assigned to a cluster, which is fundamental to the Butina algorithm.
     assigned = np.zeros(n_fingerprints, dtype=bool)
 
+    # `coeff`: A pre-calculated constant from the Tanimoto-to-Hamming distance
+    #          conversion formula to make the calculation inside the loop faster.
+    #          Formula: d_max = (1-T)/(1+T) * (a+b)
+    coeff = (1.0 - tanimoto_cutoff) / (1.0 + tanimoto_cutoff)
+
+    # --- 3. Main Clustering Loop ---
+
+    # Iterate through every fingerprint to select potential cluster centroids.
     for i in range(n_fingerprints):
+        # If the molecule has already been assigned to a previous cluster, skip it.
         if assigned[i]:
             continue
 
-        # range_search is dramatically faster on the GPU
-        lims, D, I = index.range_search(fp_array[i:i + 1], hamming_threshold)
+        # --- Stage 1: Fast, "Generous" Search with Faiss ---
 
-        neighbor_indices = I[lims[0]:lims[1]]
+        # `a`: The pop-count of the current molecule being treated as a centroid.
+        a = int(popcounts[i])
+
+        # `guess_radius`: A dynamically calculated and deliberately oversized Hamming
+        #                 distance. To guarantee we don't miss any neighbors, we calculate
+        #                 this "worst-case" radius assuming the neighbor has the largest
+        #                 possible pop-count in the dataset (max_pop).
+        guess_radius = int(coeff * (a + max_pop))
+
+        # Perform the fast, brute-force search using Faiss to get all candidate
+        # neighbors within the generous guess_radius.
+        # `D`: Distances (Hamming)
+        # `I`: Indices of neighbors
+        lims, dist, idx = index.range_search(fp_array[i:i + 1], guess_radius)
+
+        # --- Stage 2: Exact Tanimoto Verification ---
 
         new_cluster = []
-        for idx in neighbor_indices:
-            # Add any neighbor that has not yet been assigned to a cluster
-            if not assigned[idx]:
-                new_cluster.append(idx)
-                assigned[idx] = True
 
-        if new_cluster:
-            clusters.append(tuple(new_cluster))
+        # Loop through only the candidate neighbors found by Faiss.
+        # `j`: index of a candidate neighbor
+        # `d`: Candidate neighbour Hamming distance from molecule i.
+        for j, d in zip(idx[lims[0]:lims[1]], dist[lims[0]:lims[1]]):
+            # Skip any candidate that has already been assigned to a cluster.
+            if assigned[j]:
+                continue
+
+            # `b`: The pop-count of the candidate neighbor molecule.
+            b = int(popcounts[j])
+
+            # `c`: The number of shared "on" bits (the intersection). This is calculated
+            #      from the two pop-counts and their Hamming distance.
+            #      Hamming Formula: Hamming_Dist(a,b) = a + b - 2c
+            #                       or
+            #                       Hamming_Dist(a,b) = popcount(a) + popcount(b) - 2 * popcount(a&b)
+            #      Rearranging for c: c = (a + b - Hamming_Dist(a,b)) / 2
+            #                       or
+            #                         popcount(a&b) = (popcount(a) + popcount(b) - Hamming_Dist(a,b)) / 2
+            c = (a + b - d) // 2
+
+            # Tanimoto Similarity = c / (a + b - c)
+            # This is the exact, final check.
+            if c / (a + b - c) >= tanimoto_cutoff:
+                # If the true Tanimoto similarity is high enough, add the neighbor
+                # to the current cluster and mark it as assigned so it won't be
+                # processed again.
+                new_cluster.append(j)
+                assigned[j] = True
+
+        # Add the newly formed, fully verified cluster to the final list.
+        clusters.append(tuple(new_cluster))
 
     return clusters
 

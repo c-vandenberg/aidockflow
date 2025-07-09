@@ -222,7 +222,7 @@ class CentroidLibraryCurator(BaseCurator):
         sub_centroid_end = time.time()
         self._logger.info(
             f'Round {round_num} Batch {batch_num}: Sub-centroid selection time: '
-            f'{round(sub_centroid_start - sub_centroid_end)} seconds.'
+            f'{round(sub_centroid_end - sub_centroid_start)} seconds.'
         )
 
         self._logger.info(

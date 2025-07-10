@@ -17,7 +17,7 @@ data:
   centroids_processed_path: '../data/processed/ZINC20-3D-druglike-centroids/centroid_pool.parquet'
   max_workers: 10
   max_in_memory_centroids: 15_000_000
-  clustering_batch_size: 10_000_000
+  clustering_batch_size: 1_000_000
   tanimoto_cluster_cutoff: 0.6
 
   # Data loading

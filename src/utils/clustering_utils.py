@@ -2,8 +2,11 @@ from typing import List, Tuple, Any
 
 import numpy as np
 import faiss
+from faiss.contrib.exhaustive_search import range_search_gpu
 from rdkit import DataStructs
 from rdkit.ML.Cluster import Butina
+
+BATCH_Q = 4096 # Fits in L3 cache
 
 
 def faiss_butina_cluster(fp_array: np.ndarray, tanimoto_cutoff: float) -> list[tuple[int, ...]]:
@@ -53,8 +56,13 @@ def faiss_butina_cluster(fp_array: np.ndarray, tanimoto_cutoff: float) -> list[t
 
     # `index`: A Faiss CPU index for brute-force search on binary data, using
     #          optimized C++ code.
-    index = faiss.IndexBinaryFlat(dimension)
-    index.add(fp_array) # Add the fingerprints to the index
+    cpu_index = faiss.IndexBinaryFlat(dimension)
+
+    gpu_index = None
+    if faiss.get_num_gpus() > 0:
+        res = faiss.StandardGpuResources()
+        gpu_index = faiss.GpuIndexBinaryFlat(res, dimension)
+        gpu_index.add(fp_array) # Add the fingerprints to the index
 
     # --- 2. Pre-computation for Efficiency ---
 
@@ -83,64 +91,89 @@ def faiss_butina_cluster(fp_array: np.ndarray, tanimoto_cutoff: float) -> list[t
     # --- 3. Main Clustering Loop ---
 
     # Iterate through every fingerprint to select potential cluster centroids.
-    for i in range(n_fingerprints):
-        # If the molecule has already been assigned to a previous cluster, skip it.
-        if assigned[i]:
-            continue
-
-        # --- Stage 1: Fast, "Generous" Search with Faiss ---
-
-        # `a`: The pop-count of the current molecule being treated as a centroid.
-        a = int(popcounts[i])
+    for start in range(0, n_fingerprints, BATCH_Q):
+        # Calculate end of current batch of fingerprints
+        end = min(start + BATCH_Q, n_fingerprints)
+        batch_pops = popcounts[start:end]
 
         # `guess_radius`: A dynamically calculated and deliberately oversized Hamming
         #                 distance. To guarantee we don't miss any neighbors, we calculate
         #                 this "worst-case" radius assuming the neighbor has the largest
         #                 possible pop-count in the dataset (max_pop).
-        guess_radius = int(coeff * (a + max_pop))
+        guess_radius = int(coeff * (int(batch_pops.max()) + max_pop))
 
-        # Perform the fast, brute-force search using Faiss to get all candidate
-        # neighbors within the generous guess_radius.
-        # `D`: Distances (Hamming)
-        # `I`: Indices of neighbors
-        lims, dist, idx = index.range_search(fp_array[i:i + 1], guess_radius)
+        if gpu_index is not None:
+            # ---- GPU k-NN emulation + CPU fallback ----
+            lims, dist, idx = range_search_gpu(
+                fp_array[start:end],  # queries
+                guess_radius,  # radius
+                gpu_index,  # GPU index
+                cpu_index,  # CPU fallback (exact)
+                gpu_k=2048  # candidates per query
+            )
+        else:
+            # Perform the fast, brute-force search using Faiss to get all candidate
+            # neighbors within the generous guess_radius.
+            # If we used one `index.range_search()` range-search per fingerprint for IndexBinaryFlat
+            # this would be O(N²) Hamming comparisons. We therefore use batches of `fp_array[start:end]`.
+            # This also reduces Python ↔ C transitions.
+            # `dist`: Distances (Hamming)
+            # `idx`: Indices of neighbors
+            lims, dist, idx = cpu_index.range_search(fp_array[start:end], guess_radius)
 
-        # --- Stage 2: Exact Tanimoto Verification ---
+        # Iterate over every query fingerprint in the mini-batch
+        for fp_q in range(end - start):
+            # Global index of the current query fingerprint (current molecule)
+            fp_idx = start + fp_q
 
-        new_cluster = []
-
-        # Loop through only the candidate neighbors found by Faiss.
-        # `j`: index of a candidate neighbor
-        # `d`: Candidate neighbour Hamming distance from molecule i.
-        for j, d in zip(idx[lims[0]:lims[1]], dist[lims[0]:lims[1]]):
-            # Skip any candidate that has already been assigned to a cluster.
-            if assigned[j]:
+            # If the molecule has already been assigned to a previous cluster, skip it.
+            if assigned[fp_idx]:
                 continue
 
-            # `b`: The pop-count of the candidate neighbor molecule.
-            b = int(popcounts[j])
+            # --- Stage 1: Fast, "Generous" Search with Faiss ---
 
-            # `c`: The number of shared "on" bits (the intersection). This is calculated
-            #      from the two pop-counts and their Hamming distance.
-            #      Hamming Formula: Hamming_Dist(a,b) = a + b - 2c
-            #                       or
-            #                       Hamming_Dist(a,b) = popcount(a) + popcount(b) - 2 * popcount(a&b)
-            #      Rearranging for c: c = (a + b - Hamming_Dist(a,b)) / 2
-            #                       or
-            #                         popcount(a&b) = (popcount(a) + popcount(b) - Hamming_Dist(a,b)) / 2
-            c = (a + b - d) // 2
+            # `a`: The pop-count of the current molecule being treated as a centroid.
+            a = int(popcounts[fp_idx])
 
-            # Tanimoto Similarity = c / (a + b - c)
-            # This is the exact, final check.
-            if c / (a + b - c) >= tanimoto_cutoff:
-                # If the true Tanimoto similarity is high enough, add the neighbor
-                # to the current cluster and mark it as assigned so it won't be
-                # processed again.
-                new_cluster.append(j)
-                assigned[j] = True
+            q_l, q_r = lims[fp_q], lims[fp_q + 1]
 
-        # Add the newly formed, fully verified cluster to the final list.
-        clusters.append(tuple(new_cluster))
+            # --- Stage 2: Exact Tanimoto Verification ---
+
+            new_cluster = [fp_idx]
+            assigned[fp_idx] = True
+
+            # Loop through only the candidate neighbors found by Faiss.
+            # `j`: index of a candidate neighbor
+            # `d`: Candidate neighbour Hamming distance from molecule i.
+            for j, d in zip(idx[q_l:q_r], dist[q_l:q_r]):
+                # Skip any candidate that has already been assigned to a cluster.
+                if assigned[j]:
+                    continue
+
+                # `b`: The pop-count of the candidate neighbor molecule.
+                b = int(popcounts[j])
+
+                # `c`: The number of shared "on" bits (the intersection). This is calculated
+                #      from the two pop-counts and their Hamming distance.
+                #      Hamming Formula: Hamming_Dist(a,b) = a + b - 2c
+                #                       or
+                #                       Hamming_Dist(a,b) = popcount(a) + popcount(b) - 2 * popcount(a&b)
+                #      Rearranging for c: c = (a + b - Hamming_Dist(a,b)) / 2
+                #                       or
+                #                         popcount(a&b) = (popcount(a) + popcount(b) - Hamming_Dist(a,b)) / 2
+                c = (a + b - d) // 2
+
+                # Tanimoto Similarity = c / (a + b - c)
+                # This is the exact, final check.
+                if c / (a + b - c) >= tanimoto_cutoff:
+                    # If the true Tanimoto similarity is high enough, add the neighbor
+                    # to the current cluster and mark it as assigned so it won't be
+                    # processed again.
+                    new_cluster.append(j)
+                    assigned[j] = True
+
+            # Add the newly formed, fully verified cluster to the final list.
+            clusters.append(tuple(new_cluster))
 
     return clusters
 

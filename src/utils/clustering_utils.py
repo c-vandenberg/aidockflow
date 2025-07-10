@@ -130,6 +130,9 @@ def faiss_butina_cluster(fp_array: np.ndarray, tanimoto_cutoff: float) -> list[t
             if assigned[fp_idx]:
                 continue
 
+            new_cluster = [fp_idx]
+            assigned[fp_idx] = True
+
             # --- Stage 1: Fast, "Generous" Search with Faiss ---
 
             # `a`: The pop-count of the current molecule being treated as a centroid.
@@ -138,9 +141,6 @@ def faiss_butina_cluster(fp_array: np.ndarray, tanimoto_cutoff: float) -> list[t
             q_l, q_r = lims[fp_q], lims[fp_q + 1]
 
             # --- Stage 2: Exact Tanimoto Verification ---
-
-            new_cluster = [fp_idx]
-            assigned[fp_idx] = True
 
             # Loop through only the candidate neighbors found by Faiss.
             # `j`: index of a candidate neighbor

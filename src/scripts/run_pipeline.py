@@ -68,34 +68,34 @@ def main():
 
     # --- Phase 1. Data Ingestion & Curation ---
     # 1.1. Retrieve High-Fidelity Actives
-    #actives_path: str = data_config.get('standardized_actives_path', '../data/processed')
-    #os.makedirs(os.path.dirname(actives_path), exist_ok=True)
+    actives_path: str = data_config.get('standardized_actives_path', '../data/processed')
+    os.makedirs(os.path.dirname(actives_path), exist_ok=True)
 
-    #actives_curator: HighFidelityActivesCurator = HighFidelityActivesCurator(
-    #    config=data_config,
-    #    logger=data_curation_logger
-    #)
-    #actives_curator.run()
+    actives_curator: HighFidelityActivesCurator = HighFidelityActivesCurator(
+        config=data_config,
+        logger=data_curation_logger
+    )
+    actives_curator.run()
 
     # 1.2. Split High-Fidelity Actives and Save Train, Validation, and Test Sets
-    #actives_dir = os.path.dirname(actives_path)
-    #random_state = data_config.get('random_state', 4)
-    #actives_loader: HighFidelityActivesDataLoader = HighFidelityActivesDataLoader(
-    #    test_split=data_config.get('test_split', 0.15),
-    #    validation_split=data_config.get('validation_split', 0.15),
-    #    logger=data_curation_logger,
-    #    actives_path=actives_path,
-    #    random_state=random_state
-    #)
-    #actives_loader.setup_datasets()
+    actives_dir = os.path.dirname(actives_path)
+    random_state = data_config.get('random_state', 4)
+    actives_loader: HighFidelityActivesDataLoader = HighFidelityActivesDataLoader(
+        test_split=data_config.get('test_split', 0.15),
+        validation_split=data_config.get('validation_split', 0.15),
+        logger=data_curation_logger,
+        actives_path=actives_path,
+        random_state=random_state
+    )
+    actives_loader.setup_datasets()
 
-    #actives_loader.get_train_dataset().to_parquet(f'{actives_dir}/train_pos.parquet')
-    #actives_loader.get_valid_dataset().to_parquet(f'{actives_dir}/val_pos.parquet')
-    #actives_loader.get_test_dataset().to_parquet(f'{actives_dir}/test_pos.parquet')
+    actives_loader.get_train_dataset().to_parquet(f'{actives_dir}/train_pos.parquet')
+    actives_loader.get_valid_dataset().to_parquet(f'{actives_dir}/val_pos.parquet')
+    actives_loader.get_test_dataset().to_parquet(f'{actives_dir}/test_pos.parquet')
 
     # 1.3. Build ZINC SMILES database
-    #zinc_curator: ZincDatabaseCurator = ZincDatabaseCurator(config=data_config, logger=data_curation_logger)
-    #zinc_curator.run()
+    zinc_curator: ZincDatabaseCurator = ZincDatabaseCurator(config=data_config, logger=data_curation_logger)
+    zinc_curator.run()
 
     # 1.4. Build ZINC “Druglike-Centroid Library”
     centroid_curator: CentroidLibraryCurator = CentroidLibraryCurator(config=data_config, logger=data_curation_logger)

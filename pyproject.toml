@@ -1,0 +1,41 @@
+# pyproject.toml
+
+[build-system]
+requires = [
+    "setuptools>=61.0",
+    "wheel"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aidockflow"
+version = "0.0.1"
+description = "An AI-accelerated virtual‑screening platform using active learning to efficiently explore vast chemical libraries."
+readme = "README.md"
+license = { text = "MIT License" }
+authors = [
+    { name = "Christopher van den Berg", email = "cvandenberg1105@googlemail.com" }
+]
+keywords = ["bioinformatics", "cheminformatics", "drug discovery", "graph neural network", "active learning", "bioactivity"]
+classifiers = [
+    "Programming Language :: Python :: 3.10",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Intended Audience :: Science/Research",
+]
+requires-python = ">=3.10"
+dependencies = [
+    "biochemical_data_connectors~=3.2.0",
+    "ml_training_base~=0.4.0",
+    "numpy~=2.1.3",
+    "pandas~=2.2.3",
+    "rdkit~=2025.3.2",
+    "validators~=0.35.0"
+]
+
+[project.urls]
+Repository = "https://github.com/c-vandenberg/aidockflow"
+"Bug Tracker" = "https://github.com/c-vandenberg/aidockflow/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]

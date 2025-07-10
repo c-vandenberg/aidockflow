@@ -14,5 +14,10 @@ data:
   zinc_raw_data_output_dir: '../data/raw/ZINC15-3D-druglike/'
   max_workers: 10
 
-  data_curation_log_path: "../var/log/processing/P00533/data_curation.log"
-  training_log_path: "../var/log/processing/P00533/training.log"
+  # Data loading
+  test_split: 0.15
+  validation_split: 0.15
+  random_state: 4
+
+  data_curation_log_dir: "../var/log/processing/P00533/data_curation"
+  training_log_dir: "../var/log/processing/P00533/training"

@@ -28,33 +28,46 @@ class CentroidLibraryCurator(BaseCurator):
         #    Multi-level hierarchical cluster is therefore needed to iteratively
         #    cluster the data until the number of centroids is manageable.
         smiles_input_path = self._config.get('zinc_concat_smiles_path') + '.gzip'
-        centroids_raw_dir = self._config.get('centroids_raw_dir', '../data/raw/ZINC20-3D-druglike-centroids/')
-        os.makedirs(centroids_raw_dir, exist_ok=True)
+        zinc_library_reduce_dir = self._config.get(
+            'zinc_library_reduction_raw_dir',
+            '../data/raw/ZINC20-3D-druglike-centroids/library-reduction'
+        )
+        os.makedirs(zinc_library_reduce_dir, exist_ok=True)
 
         if not os.path.exists(smiles_input_path):
             self._logger.error(f'Error: SMILES file not found at "{smiles_input_path}"')
             return
 
+        use_medoids_for_reduction = self._config.get('use_medoids_for_reduction', True)
+        if use_medoids_for_reduction:
+            self._logger.info("Using MEDOID (max pop-count) selection for reduction rounds.")
+            representatives = 'medoids'
+        else:
+            self._logger.info("Using CENTROID (min MolWt) selection for reduction rounds.")
+            representatives = 'centroids'
+
         round_num = 1
         max_in_memory_size = self._config.get('max_in_memory_centroids', 200_000_000)
 
         while True:
-            centroids_output_path = f'{centroids_raw_dir}/round_{round_num}_centroids.smi'
-            num_centroids = self._run_clustering_round(
+            reps_output_path = f'{zinc_library_reduce_dir}/round_{round_num}_{representatives}.smi'
+            num_reps = self._run_clustering_round(
                 smiles_input_path=smiles_input_path,
-                centroids_output_path=centroids_output_path,
-                round_num=round_num
+                representatives_output_path=reps_output_path,
+                round_num=round_num,
+                use_medoids=use_medoids_for_reduction
             )
 
-            if num_centroids <= max_in_memory_size:
+            if num_reps <= max_in_memory_size:
+                reps_output_path = f'{zinc_library_reduce_dir}/round_{round_num}_centroids.smi'
                 self._logger.info(
-                    f'Number of centroids ({num_centroids}) is small enough for final in-memory clustering.'
+                    f'Number of representatives ({num_reps}) is small enough for final in-memory clustering.'
                 )
-                final_sub_centroids_path = centroids_output_path + '.gzip'
+                final_sub_centroids_path = reps_output_path + '.gzip'
                 break
 
             # Prepare for next clustering round
-            smiles_input_path = centroids_output_path + '.gzip'
+            smiles_input_path = reps_output_path + '.gzip'
             round_num += 1
 
         # 2. Perform a final clustering on the aggregated sub-centroids, which now fit in memory.
@@ -64,7 +77,8 @@ class CentroidLibraryCurator(BaseCurator):
         final_centroid_smiles = self._process_smiles_batch(
             smiles_batch=final_sub_centroids,
             tanimoto_cutoff=self._config.get('tanimoto_cluster_cutoff', 0.6),
-            round_num=round_num
+            round_num=round_num,
+            use_medoids=False
         )
 
         # 3. Standardize final centroid SMILES and calculate InChIKey
@@ -100,63 +114,72 @@ class CentroidLibraryCurator(BaseCurator):
         else:
             self._logger.error("No centroids were selected after final clustering.")
 
-    def _run_clustering_round(self, smiles_input_path: str, centroids_output_path: str, round_num: int):
+    def _run_clustering_round(
+        self,
+        smiles_input_path: str,
+        representatives_output_path: str,
+        round_num: int,
+        use_medoids: bool
+    ):
         self._logger.info(f'Starting clustering round {round_num} on file: {smiles_input_path}')
-        uncompressed_centroids_path = centroids_output_path
-        gzipped_centroids_path = centroids_output_path + '.gzip'
+        uncompressed_reps_path = representatives_output_path
+        gzipped_reps_path = uncompressed_reps_path + '.gzip'
         batch_size = self._config.get('clustering_batch_size', 100_000_000)
         tanimoto_cutoff = self._config.get('tanimoto_cluster_cutoff', 0.6)
         smiles_stream = stream_lines_from_gzip_file(smiles_input_path)
 
-        total_centroids_written = 0
+        total_reps_written = 0
         batch_num = 1
-        with open(uncompressed_centroids_path, 'w') as outfile:
+        with open(uncompressed_reps_path, 'w') as outfile:
             batch_smiles = []
             for i, smiles in enumerate(smiles_stream):
                 batch_smiles.append(smiles)
                 if len(batch_smiles) >= batch_size:
                     self._logger.info(f'Processing batch starting at molecule {i+1-batch_size}...')
-                    sub_centroids = self._process_smiles_batch(
+                    sub_reps = self._process_smiles_batch(
                         smiles_batch=batch_smiles,
                         tanimoto_cutoff=tanimoto_cutoff,
                         round_num=round_num,
-                        batch_num=batch_num
+                        batch_num=batch_num,
+                        use_medoids=use_medoids
                     )
-                    for sub_centroid_smiles in sub_centroids:
-                        outfile.write(sub_centroid_smiles + '\n')
-                    total_centroids_written += len(sub_centroids)
+                    for sub_rep_smiles in sub_reps:
+                        outfile.write(sub_rep_smiles + '\n')
+                    total_reps_written += len(sub_reps)
                     batch_num += 1
                     batch_smiles = []
 
             if batch_smiles:
                 self._logger.info("Processing final batch...")
-                sub_centroids = self._process_smiles_batch(
+                sub_reps = self._process_smiles_batch(
                     smiles_batch=batch_smiles,
                     tanimoto_cutoff=tanimoto_cutoff,
                     round_num=round_num,
-                    batch_num=batch_num
+                    batch_num=batch_num,
+                    use_medoids=use_medoids
                 )
-                for sub_centroid_smiles in sub_centroids:
-                    outfile.write(sub_centroid_smiles + '\n')
-                total_centroids_written += len(sub_centroids)
+                for sub_reps_smiles in sub_reps:
+                    outfile.write(sub_reps_smiles + '\n')
+                total_reps_written += len(sub_reps)
 
         compress_and_delete_file(
-            uncompressed_path=uncompressed_centroids_path,
-            compressed_path=gzipped_centroids_path,
+            uncompressed_path=uncompressed_reps_path,
+            compressed_path=gzipped_reps_path,
             logger=self._logger
         )
 
         self._logger.info(
-            f"Clustering round complete. Wrote {total_centroids_written} sub-centroids to {gzipped_centroids_path}"
+            f"Clustering round complete. Wrote {total_reps_written} representatives to {gzipped_reps_path}"
         )
 
-        return total_centroids_written
+        return total_reps_written
 
     def _process_smiles_batch(
         self,
         smiles_batch: List[str],
         tanimoto_cutoff: float,
         round_num: int,
+        use_medoids: bool,
         batch_num: Optional[int] = None
     ) -> List[str]:
         if batch_num is None:
@@ -198,35 +221,45 @@ class CentroidLibraryCurator(BaseCurator):
         # 2. Cluster the fingerprints to give clusters of compounds whose similarities are
         #    within the Tanimoto similarity threshold.
         cluster_start = time.time()
-        clusters = faiss_butina_cluster(fp_array=fp_array, tanimoto_cutoff=tanimoto_cutoff)
+        clusters, popcounts = faiss_butina_cluster(
+            fp_array=fp_array,
+            tanimoto_cutoff=tanimoto_cutoff,
+            return_popcounts=True
+        )
         cluster_end = time.time()
         self._logger.info(
             f'Round {round_num} Batch {batch_num}: {len(fingerprints)} fingerprints clustering time: '
             f'{round(cluster_end - cluster_start)} seconds.'
         )
 
-        # 3. Select the smallest molecule from each cluster as the sub-centroid of that cluster
-        sub_centroid_start = time.time()
-        sub_centroids = []
+        # 3. Select the representative (centroids or medoid) from each cluster
+        sub_rep_start = time.time()
+        sub_reps = []
         for cluster_indices in clusters:
             try:
-                cluster_smiles = [valid_smiles[idx] for idx in cluster_indices]
-                smallest_mol_smiles = min(
-                    cluster_smiles,
-                    key=lambda smiles_str: Descriptors.MolWt(Chem.MolFromSmiles(smiles_str))
-                )
-                sub_centroids.append(smallest_mol_smiles)
+                if use_medoids:
+                    # MEDOID STRATEGY: Pick the member with the highest pop-count (densest).
+                    best_idx = max(cluster_indices, key=lambda i: popcounts[i])
+                    sub_reps.append(valid_smiles[best_idx])
+                else:
+                    # CENTROID STRATEGY: Pick the member with the smallest molecular weight.
+                    cluster_smiles = [valid_smiles[idx] for idx in cluster_indices]
+                    smallest_mol_smiles = min(
+                        cluster_smiles,
+                        key=lambda smiles_str: Descriptors.MolWt(Chem.MolFromSmiles(smiles_str))
+                    )
+                    sub_reps.append(smallest_mol_smiles)
             except Exception as e:
-                self._logger.error(f'Round {round_num} Batch {batch_num}: Failed to calculate sub-centroid for cluster. '
+                self._logger.error(f'Round {round_num} Batch {batch_num}: Failed to select representative for cluster. '
                                    f'Error: {e}')
-        sub_centroid_end = time.time()
+        sub_rep_end = time.time()
         self._logger.info(
-            f'Round {round_num} Batch {batch_num}: Sub-centroid selection time: '
-            f'{round(sub_centroid_end - sub_centroid_start)} seconds.'
+            f'Round {round_num} Batch {batch_num}: Representative selection time: '
+            f'{round(sub_rep_end - sub_rep_start)} seconds.'
         )
 
         self._logger.info(
-            f'Round {round_num} Batch {batch_num}: {len(sub_centroids)} sub-centroids found.'
+            f'Round {round_num} Batch {batch_num}: {len(sub_reps)} representatives found.'
         )
 
-        return sub_centroids
+        return sub_reps

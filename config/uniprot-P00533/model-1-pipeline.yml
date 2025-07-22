@@ -12,12 +12,13 @@ data:
   # ZINC15 3D druglike centroid library curation
   zinc_downloader_script_path: '../resources/download-scripts/ZINC-downloader-3D-smi.wget'
   zinc_raw_data_output_dir: '../data/raw/ZINC20-3D-druglike-database/'
-  zinc_concat_smiles_path: '../data/raw/ZINC20-3D-druglike-SMILES/raw_smiles.smi'
-  centroids_raw_dir: '../data/raw/ZINC20-3D-druglike-centroids'
+  zinc_concat_smiles_path: '../data/raw/ZINC20-3D-druglike-SMILES/test_1_million_smiles.smi'
+  zinc_library_reduction_raw_dir: '../data/raw/ZINC20-3D-druglike-centroids/library-reduction'
   centroids_processed_path: '../data/processed/ZINC20-3D-druglike-centroids/centroid_pool.parquet'
   max_workers: 10
   max_in_memory_centroids: 15_000_000
   clustering_batch_size: 1_000_000
+  use_medoids_for_reduction: true
   tanimoto_cluster_cutoff: 0.6
 
   # Data loading

@@ -6,7 +6,7 @@ data:
     "Ki"
   ]
   bioactivity_threshold: 1000
-  standardized_actives_path: "../data/processed/P00533/actives/standardized_actives.parquet"
+  actives_preprocessed_path: "../data/preprocessed/P00533/actives/standardized_actives.parquet"
   cache_dir: "../data/raw/high-fidelity-actives/cache/P00533/"
 
   # ZINC15 3D druglike centroid library curation

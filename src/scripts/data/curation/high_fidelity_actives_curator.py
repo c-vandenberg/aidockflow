@@ -43,7 +43,10 @@ def main():
     if not all([data_config.get('uniprot_id'), data_config.get('bioactivity_measures')]):
         raise ValueError('You must provide a `uniprot_id` and `bioactivity_measures` in the configuration file.')
 
-    os.makedirs(os.path.dirname(data_config.get('standardized_actives_path', '../data/processed')), exist_ok=True)
+    os.makedirs(os.path.dirname(data_config.get(
+        'actives_preprocessed_path',
+        'data/preprocessed/standardized_actives.parquet'
+    )), exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
     logger = configure_multi_level_logger(log_dir=log_dir)
 

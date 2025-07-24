@@ -68,7 +68,7 @@ def main():
 
     # --- Phase 1. Data Ingestion & Curation ---
     # 1.1. Retrieve High-Fidelity Actives
-    #actives_path: str = data_config.get('standardized_actives_path', '../data/processed')
+    #actives_path: str = data_config.get('actives_preprocessed_path', 'data/preprocessed/standardized_actives.parquet')
     #os.makedirs(os.path.dirname(actives_path), exist_ok=True)
 
     #actives_curator: HighFidelityActivesCurator = HighFidelityActivesCurator(

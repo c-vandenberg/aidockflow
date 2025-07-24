@@ -1,4 +1,4 @@
-from typing import List, Tuple, Any
+from typing import List, Tuple, Any, Union
 
 import numpy as np
 import faiss
@@ -6,10 +6,18 @@ from faiss.contrib.exhaustive_search import range_search_gpu
 from rdkit import DataStructs
 from rdkit.ML.Cluster import Butina
 
-BATCH_Q = 4096 # Fits in L3 cache
+# BATCH_Q: The number of queries to send to Faiss in a single batch.
+#          This avoids a pure Python loop (1 query at a time) and reduces overhead,
+#          significantly speeding up the process. A value of 4096 is small enough
+#          to fit in a CPU's L3 cache, which is optimal.
+BATCH_Q = 4096
 
 
-def faiss_butina_cluster(fp_array: np.ndarray, tanimoto_cutoff: float) -> list[tuple[int, ...]]:
+def faiss_butina_cluster(
+    fp_array: np.ndarray,
+    tanimoto_cutoff: float,
+    return_popcounts: bool = False
+) -> Union[list[tuple[int, ...]], Tuple[List[Tuple[int, ...]], np.ndarray]]:
     """
     Performs an exact Butina clustering on a large set of binary fingerprints.
     The goal is to group molecules where the Tanimoto similarity is greater than
@@ -39,25 +47,28 @@ def faiss_butina_cluster(fp_array: np.ndarray, tanimoto_cutoff: float) -> list[t
         A NumPy array of fingerprints (dtype=uint8).
     tanimoto_cutoff : float
         The Tanimoto similarity cutoff.
+    return_popcounts : bool
+        If True, returns a tuple of (clusters, popcounts).
 
     Returns
     -------
-    List[Tuple[int, ...]]
-        A list of clusters, where each cluster is a tuple of integer indices.
+    List[Tuple[int, ...]] or Tuple[List[Tuple[int, ...]], np.ndarray]
+        A list of clusters (where each cluster is a tuple of integer indices),
+        or a tuple of (clusters, popcounts) if requested.
     """
     # --- 1. Initialization ---
 
-    # `n_fingerprints`: The total number of molecules in the batch.
-    # `n_bytes`: The number of bytes per fingerprint (e.g., 128 for a 1024-bit fp).
+    # 1.1. `n_fingerprints`: The total number of molecules in the batch.
+    # 1.2. `n_bytes`: The number of bytes per fingerprint (e.g., 128 for a 1024-bit fp).
     n_fingerprints, n_bytes = fp_array.shape
 
-    # `dimension`: The total number of bits in each fingerprint (e.g., 1024).
+    # 1.3. `dimension`: The total number of bits in each fingerprint (e.g., 1024).
     dimension = n_bytes * 8
 
-    # `index`: A Faiss CPU index for brute-force search on binary data, using
-    #          optimized C++ code.
+    # 1.4. `cpu_index`: A Faiss CPU index for brute-force search on binary data.
     cpu_index = faiss.IndexBinaryFlat(dimension)
 
+    # 1.5. If a GPU is available, create a separate GPU index for the initial fast search.
     gpu_index = None
     if faiss.get_num_gpus() > 0:
         res = faiss.StandardGpuResources()
@@ -66,85 +77,88 @@ def faiss_butina_cluster(fp_array: np.ndarray, tanimoto_cutoff: float) -> list[t
 
     # --- 2. Pre-computation for Efficiency ---
 
-    # Pre-compute pop-counts (number of 1-bits) once
-    # `popcounts`: A NumPy array storing the number of "on" bits (1s) for every
+    # 2.1. Pre-compute pop-counts (number of 1-bits) once
+    # 2.1.1. `popcounts`: A NumPy array storing the number of "on" bits (1s) for every
     #              fingerprint in the batch. This is pre-computed once to avoid
     #              recalculating it thousands of times inside the main loop.
     popcounts = np.unpackbits(fp_array, axis=1).sum(1).astype(np.int16)
 
-    # `max_pop`: The largest pop-count found in the entire batch. This is used
+    # 2.1.2. `max_pop`: The largest pop-count found in the entire batch. This is used
     #            to calculate a "worst-case" search radius later.
     max_pop = popcounts.max()
 
-    # `clusters`: The final list that will store the identified clusters.
+    # 2.2. `clusters`: The final list that will store the identified clusters.
     clusters: list[tuple[int, ...]] = []
 
-    # `assigned`: A boolean array to track which molecules have already been
+    # 2.3. `assigned`: A boolean array to track which molecules have already been
     #             assigned to a cluster, which is fundamental to the Butina algorithm.
     assigned = np.zeros(n_fingerprints, dtype=bool)
 
-    # `coeff`: A pre-calculated constant from the Tanimoto-to-Hamming distance
+    # 2.4. `coeff`: A pre-calculated constant from the Tanimoto-to-Hamming distance
     #          conversion formula to make the calculation inside the loop faster.
     #          Formula: d_max = (1-T)/(1+T) * (a+b)
     coeff = (1.0 - tanimoto_cutoff) / (1.0 + tanimoto_cutoff)
 
     # --- 3. Main Clustering Loop ---
 
-    # Iterate through every fingerprint to select potential cluster centroids.
+    # 3.1. Iterate through every fingerprint to in mini-batches of size `BATCH_Q` to select
+    # potential cluster centroids.
     for start in range(0, n_fingerprints, BATCH_Q):
-        # Calculate end of current batch of fingerprints
+        # 3.1.1. Calculate end of current batch of fingerprints
         end = min(start + BATCH_Q, n_fingerprints)
         batch_pops = popcounts[start:end]
 
-        # `guess_radius`: A dynamically calculated and deliberately oversized Hamming
+        # 3.1.2. `guess_radius`: A dynamically calculated and deliberately oversized Hamming
         #                 distance. To guarantee we don't miss any neighbors, we calculate
         #                 this "worst-case" radius assuming the neighbor has the largest
         #                 possible pop-count in the dataset (max_pop).
         guess_radius = int(coeff * (int(batch_pops.max()) + max_pop))
 
+        # --- Fast, "Generous" Search with Faiss ---
+
+        # 3.1.3. Perform a single, fast search for all queries in the mini-batch.
         if gpu_index is not None:
-            # ---- GPU k-NN emulation + CPU fallback ----
+            # Use the GPU k-NN emulation + CPU fallback strategy for maximum speed if GPU
+            # is available
             lims, dist, idx = range_search_gpu(
-                fp_array[start:end],  # queries
-                guess_radius,  # radius
-                gpu_index,  # GPU index
-                cpu_index,  # CPU fallback (exact)
-                gpu_k=2048  # candidates per query
+                fp_array[start:end],  # Queries
+                guess_radius,  # Radius
+                gpu_index,  # GPU Index
+                cpu_index,  # CPU Index Fallback
+                gpu_k=2048  # Candidates Per Query
             )
         else:
-            # Perform the fast, brute-force search using Faiss to get all candidate
-            # neighbors within the generous guess_radius.
-            # If we used one `index.range_search()` range-search per fingerprint for IndexBinaryFlat
-            # this would be O(N²) Hamming comparisons. We therefore use batches of `fp_array[start:end]`.
-            # This also reduces Python ↔ C transitions.
-            # `dist`: Distances (Hamming)
-            # `idx`: Indices of neighbors
+            # If no GPU available, fallback to CPU-only index
             lims, dist, idx = cpu_index.range_search(fp_array[start:end], guess_radius)
 
-        # Iterate over every query fingerprint in the mini-batch
+        # --- 4. Process Results and Form Clusters ---
+
+        # 4.1. Iterate over every query fingerprint in the mini-batch
         for fp_q in range(end - start):
-            # Global index of the current query fingerprint (current molecule)
+            # 4.1.1. `fp_idx`: Global index of the current query fingerprint (current molecule)
             fp_idx = start + fp_q
 
-            # If the molecule has already been assigned to a previous cluster, skip it.
+            # 4.1.2. If the molecule has already been assigned to a previous cluster, skip it.
             if assigned[fp_idx]:
                 continue
 
+            # 4.1.3. This molecule is now the "leader" of a new cluster.
+            #        Immediately create its cluster and mark it as assigned.
             new_cluster = [fp_idx]
             assigned[fp_idx] = True
 
-            # --- Stage 1: Fast, "Generous" Search with Faiss ---
-
-            # `a`: The pop-count of the current molecule being treated as a centroid.
+            # 4.1.4. `a`: The pop-count of the current "leader" molecule.
             a = int(popcounts[fp_idx])
 
+            # `q_l, q_r`: Pointers to the slice of results for this specific query
+            #             within the larger `dist` and `idx` arrays.
             q_l, q_r = lims[fp_q], lims[fp_q + 1]
 
-            # --- Stage 2: Exact Tanimoto Verification ---
+            # --- Exact Tanimoto Verification ---
 
-            # Loop through only the candidate neighbors found by Faiss.
-            # `j`: index of a candidate neighbor
-            # `d`: Candidate neighbour Hamming distance from molecule i.
+            # 4.1.5. Loop through only the candidate neighbors found by Faiss for this query.
+            #        `j`: index of a candidate neighbor
+            #        `d`: Candidate neighbour Hamming distance from molecule i.
             for j, d in zip(idx[q_l:q_r], dist[q_l:q_r]):
                 # Skip any candidate that has already been assigned to a cluster.
                 if assigned[j]:
@@ -172,10 +186,13 @@ def faiss_butina_cluster(fp_array: np.ndarray, tanimoto_cutoff: float) -> list[t
                     new_cluster.append(j)
                     assigned[j] = True
 
-            # Add the newly formed, fully verified cluster to the final list.
+            # 4.1.6. Add the newly formed, fully verified cluster to the final list.
             clusters.append(tuple(new_cluster))
 
-    return clusters
+    if return_popcounts:
+        return clusters, popcounts
+    else:
+        return clusters
 
 
 def butina_cluster(fingerprints: List[Any], tanimoto_cutoff: float) -> List[Tuple[int, ...]]:

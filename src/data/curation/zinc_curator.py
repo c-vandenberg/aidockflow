@@ -167,9 +167,11 @@ class ZincDatabaseCurator(BaseCurator):
         """
         # 1. Define paths for uncompressed and gzipped files and
         #    ensure the specific subdirectory exists
-        uncompressed_path = os.path.join(output_dir, job['output_path'])
-        os.makedirs(os.path.dirname(uncompressed_path), exist_ok=True)
-        gzipped_path = uncompressed_path + '.gzip'
+        file_output_path = os.path.join(output_dir, job['output_path'])
+        path_split = os.path.splitext(file_output_path)
+        file_output_ext = path_split[1]
+        os.makedirs(os.path.dirname(file_output_path), exist_ok=True)
+        gzipped_path = file_output_path + '.gzip'
 
         # 2. Download the uncompressed `.smi` file using wget
         command = [
@@ -177,7 +179,7 @@ class ZincDatabaseCurator(BaseCurator):
             '-c',  # Resume interrupted downloads
             '--tries=3',  # Retry up to 3 times
             '--timeout=60',  # Set a 60-second timeout
-            '-O', uncompressed_path,
+            '-O', file_output_path,
             job['url']
         ]
 
@@ -195,12 +197,13 @@ class ZincDatabaseCurator(BaseCurator):
         except Exception as e:
             logger.error(f'Subprocess failed for {job["url"]}: {e}')
 
-        # 4. Compress the downloaded file and delete original uncompressed file
-        compress_and_delete_file(
-            uncompressed_path=uncompressed_path,
-            compressed_path=gzipped_path,
-            logger=logger
-        )
+        if file_output_ext != '.gzip':
+            # 4. Compress the downloaded file and delete original uncompressed file
+            compress_and_delete_file(
+                uncompressed_path=file_output_path,
+                compressed_path=gzipped_path,
+                logger=logger
+            )
 
     def _concatenate_smiles_files(self, input_dir: str, output_path: str):
         """

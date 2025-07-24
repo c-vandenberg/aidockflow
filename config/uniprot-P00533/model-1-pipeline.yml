@@ -6,15 +6,15 @@ data:
     "Ki"
   ]
   bioactivity_threshold: 1000
-  standardized_actives_path: "../data/processed/P00533/actives/standardized_actives.parquet"
-  cache_dir: "../data/raw/actives/cache/P00533/"
+  standardized_actives_path: "data/processed/P00533/actives/standardized_actives.parquet"
+  cache_dir: "data/raw/actives/cache/P00533/"
 
   # ZINC15 3D druglike centroid library curation
-  zinc_downloader_script_path: '../resources/download-scripts/ZINC-downloader-3D-smi.wget'
-  zinc_raw_data_output_dir: '../data/raw/ZINC20-3D-druglike-database/'
-  zinc_concat_smiles_path: '../data/raw/ZINC20-3D-druglike-SMILES/test_1_million_smiles.smi'
-  zinc_library_reduction_raw_dir: '../data/raw/ZINC20-3D-druglike-centroids/library-reduction'
-  centroids_processed_path: '../data/processed/ZINC20-3D-druglike-centroids/centroid_pool.parquet'
+  zinc_downloader_script_path: 'resources/download-scripts/ZINC-downloader-3D-smi.wget'
+  zinc_raw_data_output_dir: 'data/raw/ZINC20-3D-druglike-database/'
+  zinc_concat_smiles_path: 'data/raw/ZINC20-3D-druglike-SMILES/raw_smiles.smi'
+  zinc_library_reduction_raw_dir: 'data/raw/ZINC20-3D-druglike-centroids/library-reduction/medoid-test'
+  centroids_processed_path: 'data/processed/ZINC20-3D-druglike-centroids/centroid_pool.parquet'
   max_workers: 10
   max_in_memory_centroids: 15_000_000
   clustering_batch_size: 1_000_000
@@ -26,8 +26,8 @@ data:
   validation_split: 0.15
   random_state: 4
 
-  data_curation_log_dir: "../var/log/processing/P00533/data_curation"
-  training_log_dir: "../var/log/processing/P00533/training"
+  data_curation_log_dir: "var/log/processing/P00533/data_curation/metoid-test"
+  training_log_dir: "var/log/processing/P00533/training"
 
 model:
 

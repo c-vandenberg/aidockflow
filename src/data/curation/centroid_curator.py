@@ -40,10 +40,10 @@ class CentroidLibraryCurator(BaseCurator):
 
         use_medoids_for_reduction = self._config.get('use_medoids_for_reduction', True)
         if use_medoids_for_reduction:
-            self._logger.info("Using MEDOID (max pop-count) selection for reduction rounds.")
+            self._logger.info("Using medoid (max pop-count) selection for library reduction rounds.")
             representatives = 'medoids'
         else:
-            self._logger.info("Using CENTROID (min MolWt) selection for reduction rounds.")
+            self._logger.info("Using centroid (min MolWt) selection for library reduction rounds.")
             representatives = 'centroids'
 
         round_num = 1
@@ -59,7 +59,7 @@ class CentroidLibraryCurator(BaseCurator):
             )
 
             if num_reps <= max_in_memory_size:
-                reps_output_path = f'{zinc_library_reduce_dir}/round_{round_num}_centroids.smi'
+                reps_output_path = f'{zinc_library_reduce_dir}/round_{round_num}_{representatives}.smi'
                 self._logger.info(
                     f'Number of representatives ({num_reps}) is small enough for final in-memory clustering.'
                 )
@@ -236,6 +236,8 @@ class CentroidLibraryCurator(BaseCurator):
         sub_rep_start = time.time()
         sub_reps = []
         for cluster_indices in clusters:
+            if not cluster_indices:
+                continue
             try:
                 if use_medoids:
                     # MEDOID STRATEGY: Pick the member with the highest pop-count (densest).

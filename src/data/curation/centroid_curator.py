@@ -12,7 +12,7 @@ from src.data.curation.base_curator import BaseCurator
 from src.utils.file_utils import compress_and_delete_file, stream_lines_from_gzip_file
 from src.utils.fingerprint_utils import smiles_to_morgan_fp, fingerprints_to_numpy
 from src.utils.clustering_utils import faiss_butina_cluster
-from data.preprocessing.compound_data_preprocessing import CompoundDataPreprocessor
+from data.preprocessing.compound_preprocessing import CompoundDataPreprocessor
 
 
 class CentroidLibraryCurator(BaseCurator):

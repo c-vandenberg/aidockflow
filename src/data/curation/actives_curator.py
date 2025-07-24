@@ -6,13 +6,12 @@ from biochemical_data_connectors import (
     BindingDbBioactivesConnector,
     ChemblBioactivesConnector,
     IupharBioactivesConnector,
-    PubChemBioactivesConnector,
-    CompoundStandardizer,
+    PubChemBioactivesConnector
 )
 from biochemical_data_connectors.models import BioactiveCompound
 
 from src.data.curation.base_curator import BaseCurator
-from data.preprocessing.compound_data_preprocessing import CompoundDataPreprocessor
+from data.preprocessing.compound_preprocessing import CompoundDataPreprocessor
 
 
 class HighFidelityActivesCurator(BaseCurator):

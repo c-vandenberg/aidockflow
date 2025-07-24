@@ -7,18 +7,18 @@ import pandas as pd
 from rdkit import Chem
 from rdkit.Chem import Descriptors
 from concurrent.futures.thread import ThreadPoolExecutor
-from biochemical_data_connectors import CompoundStandardizer
 
 from src.data.curation.base_curator import BaseCurator
 from src.utils.file_utils import compress_and_delete_file, stream_lines_from_gzip_file
 from src.utils.fingerprint_utils import smiles_to_morgan_fp, fingerprints_to_numpy
 from src.utils.clustering_utils import faiss_butina_cluster
+from data.preprocessing.compound_preprocessing import CompoundDataPreprocessor
 
 
 class CentroidLibraryCurator(BaseCurator):
     def __init__(self, config: Dict, logger: logging.Logger):
         super().__init__(config=config,logger=logger)
-        self._standardizer = CompoundStandardizer(logger=logger)
+        self._preprocessor = CompoundDataPreprocessor(logger=logger)
 
     def run(self):
         # --- MULTI-LEVEL HIERARCHICAL CLUSTERING ---
@@ -81,14 +81,17 @@ class CentroidLibraryCurator(BaseCurator):
             use_medoids=False
         )
 
-        # 3. Standardize final centroid SMILES and calculate InChIKey
+        # 3. Standardize final centroid SMILES and calculate InChIKey. Use dictionary comprehension to
+        #    modify InchIKey dict key to be in line with `BioactiveCompound` objects.
+        preprocessed_centroid_records = self._preprocessor.standardize_centroid_compounds(
+            raw_centroid_smiles=final_centroid_smiles
+        )
         final_centroid_records = []
-        for centroid_smiles in final_centroid_smiles:
-            standardized_data = self._standardizer.standardize_smiles(centroid_smiles)
-            if not standardized_data:
-                self._logger.error(f'Error standardizing SMILES for {centroid_smiles}')
-
-            final_centroid_records.append(standardized_data)
+        for centroid_record in preprocessed_centroid_records:
+            final_centroid_record = {
+                key.replace('inchi_key', 'standardized_inchikey'): value for key, value in centroid_record.items()
+            }
+            final_centroid_records.append(final_centroid_record)
 
         # 4. Remove duplicates, and remove any centroid that is a duplicate of a high-fidelity active
         if final_centroid_records:
@@ -102,7 +105,7 @@ class CentroidLibraryCurator(BaseCurator):
             df_centroids = pd.DataFrame(final_centroid_records)
             df_centroids = df_centroids.drop_duplicates(subset='inchi_key')
 
-            actives_parquet_path = self._config.get('standardized_actives_path')
+            actives_parquet_path = self._config.get('actives_preprocessed_path')
             df_actives = pd.read_parquet(actives_parquet_path)
 
             if not df_actives.empty:

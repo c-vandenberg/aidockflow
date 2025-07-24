@@ -6,18 +6,18 @@ from biochemical_data_connectors import (
     BindingDbBioactivesConnector,
     ChemblBioactivesConnector,
     IupharBioactivesConnector,
-    PubChemBioactivesConnector,
-    CompoundStandardizer,
+    PubChemBioactivesConnector
 )
 from biochemical_data_connectors.models import BioactiveCompound
 
 from src.data.curation.base_curator import BaseCurator
+from data.preprocessing.compound_preprocessing import CompoundDataPreprocessor
 
 
 class HighFidelityActivesCurator(BaseCurator):
     def __init__(self, config: Dict, logger: logging.Logger):
         super().__init__(config=config,logger=logger)
-        self._standardizer = CompoundStandardizer(logger=logger)
+        self._preprocessor = CompoundDataPreprocessor(logger=logger)
 
     def run(self):
         # 1) Validate configuration
@@ -64,15 +64,7 @@ class HighFidelityActivesCurator(BaseCurator):
         )
 
         # 3) Standardize compounds
-        standardized_actives: List[BioactiveCompound] = []
-        for compound in raw_actives:
-            standardized_data = self._standardizer.standardize_smiles(compound.smiles)
-            if not standardized_data:
-                self._logger.error(f'Error standardizing SMILES for {compound.smiles}')
-
-            compound.smiles = standardized_data.get('smiles')
-            compound.standardized_inchikey = standardized_data.get('inchi_key')
-            standardized_actives.append(compound)
+        standardized_actives: List[BioactiveCompound] = self._preprocessor.standardize_bioactive_compounds(raw_actives)
 
         # 3) Deduplicate and save the final parquet file
         df = pd.DataFrame(standardized_actives)
@@ -85,5 +77,8 @@ class HighFidelityActivesCurator(BaseCurator):
         else:
             df_to_save = df
 
-        df_to_save.to_parquet(self._config.get('standardized_actives_path'))
+        df_to_save.to_parquet(self._config.get(
+            'actives_preprocessed_path',
+            'data/preprocessed/standardized_actives.parquet'
+        ))
         self._logger.info("High-fidelity actives curation complete.")

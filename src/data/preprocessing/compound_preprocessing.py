@@ -4,6 +4,7 @@ from typing import List, Dict
 from ml_training_base import BaseDataPreprocessor
 from biochemical_data_connectors import CompoundStandardizer
 from biochemical_data_connectors.models import BioactiveCompound
+from concurrent.futures.thread import ThreadPoolExecutor
 
 
 class CompoundDataPreprocessor(BaseDataPreprocessor):
@@ -25,12 +26,12 @@ class CompoundDataPreprocessor(BaseDataPreprocessor):
         return standardized_actives
 
     def standardize_centroid_compounds(self, raw_centroid_smiles: List[str]) -> List[Dict]:
-        final_centroid_records = []
-        for centroid_smiles in raw_centroid_smiles:
-            standardized_data = self._standardizer.standardize_smiles(centroid_smiles)
-            if not standardized_data:
-                self._logger.error(f'Error standardizing SMILES for {centroid_smiles}')
-
-            final_centroid_records.append(standardized_data)
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            final_centroid_records = [
+                standardized_data for standardized_data in executor.map(
+                    self._standardizer.standardize_smiles,
+                    raw_centroid_smiles
+                ) if standardized_data
+            ]
 
         return final_centroid_records

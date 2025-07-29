@@ -9,10 +9,10 @@ from rdkit.Chem import Descriptors
 from concurrent.futures.thread import ThreadPoolExecutor
 
 from src.data.curation.base_curator import BaseCurator
-from src.utils.file_utils import compress_and_delete_file, stream_lines_from_gzip_file
+from src.utils.file_utils import compress_and_delete_file, stream_lines_from_gzip_file, count_gzip_lines
 from src.utils.fingerprint_utils import smiles_to_morgan_fp, fingerprints_to_numpy
 from src.utils.clustering_utils import faiss_butina_cluster
-from data.preprocessing.compound_preprocessing import CompoundDataPreprocessor
+from src.data.preprocessing.compound_preprocessing import CompoundDataPreprocessor
 
 
 class CentroidLibraryCurator(BaseCurator):
@@ -48,38 +48,56 @@ class CentroidLibraryCurator(BaseCurator):
 
         round_num = 1
         max_in_memory_size = self._config.get('max_in_memory_centroids', 200_000_000)
+        num_smiles = count_gzip_lines(smiles_input_path)
 
-        while True:
-            reps_output_path = f'{zinc_library_reduce_dir}/round_{round_num}_{representatives}.smi'
-            num_reps = self._run_clustering_round(
-                smiles_input_path=smiles_input_path,
-                representatives_output_path=reps_output_path,
-                round_num=round_num,
-                use_medoids=use_medoids_for_reduction
+        if num_smiles <= max_in_memory_size:
+            self._logger.info(
+                f'Initial number of SMILES ({num_smiles}) is small enough for in-memory clustering. '
+                f'No SMILES library reduction required. '
             )
-
-            if num_reps <= max_in_memory_size:
+            centroid_smiles = list(stream_lines_from_gzip_file(smiles_input_path))
+            final_centroid_smiles = self._process_smiles_batch(
+                smiles_batch=centroid_smiles,
+                tanimoto_cutoff=self._config.get('tanimoto_cluster_cutoff', 0.6),
+                round_num=round_num,
+                use_medoids=False
+            )
+        else:
+            self._logger.info(
+                f'Initial number of SMILES ({num_smiles}) is too large for in-memory clustering. '
+                f'Beginning SMILES library reduction'
+            )
+            while True:
                 reps_output_path = f'{zinc_library_reduce_dir}/round_{round_num}_{representatives}.smi'
-                self._logger.info(
-                    f'Number of representatives ({num_reps}) is small enough for final in-memory clustering.'
+                num_reps = self._run_clustering_round(
+                    smiles_input_path=smiles_input_path,
+                    representatives_output_path=reps_output_path,
+                    round_num=round_num,
+                    use_medoids=use_medoids_for_reduction
                 )
-                final_sub_centroids_path = reps_output_path + '.gzip'
-                break
 
-            # Prepare for next clustering round
-            smiles_input_path = reps_output_path + '.gzip'
-            round_num += 1
+                if num_reps <= max_in_memory_size:
+                    reps_output_path = f'{zinc_library_reduce_dir}/round_{round_num}_{representatives}.smi'
+                    self._logger.info(
+                        f'Number of representatives ({num_reps}) is small enough for final in-memory clustering.'
+                    )
+                    final_sub_centroids_path = reps_output_path + '.gzip'
+                    break
 
-        # 2. Perform a final clustering on the aggregated sub-centroids, which now fit in memory.
-        self._logger.info(f"Loading final sub-centroids from {final_sub_centroids_path} for final clustering...")
-        final_sub_centroids = list(stream_lines_from_gzip_file(final_sub_centroids_path))
+                # Prepare for next clustering round
+                smiles_input_path = reps_output_path + '.gzip'
+                round_num += 1
 
-        final_centroid_smiles = self._process_smiles_batch(
-            smiles_batch=final_sub_centroids,
-            tanimoto_cutoff=self._config.get('tanimoto_cluster_cutoff', 0.6),
-            round_num=round_num,
-            use_medoids=False
-        )
+            # 2. Perform a final clustering on the aggregated sub-centroids, which now fit in memory.
+            self._logger.info(f"Loading final sub-centroids from {final_sub_centroids_path} for final clustering...")
+            final_sub_centroids = list(stream_lines_from_gzip_file(final_sub_centroids_path))
+
+            final_centroid_smiles = self._process_smiles_batch(
+                smiles_batch=final_sub_centroids,
+                tanimoto_cutoff=self._config.get('tanimoto_cluster_cutoff', 0.6),
+                round_num=round_num,
+                use_medoids=False
+            )
 
         # 3. Standardize final centroid SMILES and calculate InChIKey. Use dictionary comprehension to
         #    modify InchIKey dict key to be in line with `BioactiveCompound` objects.

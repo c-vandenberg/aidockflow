@@ -106,12 +106,12 @@ def main():
     #zinc_curator.run()
 
     # 1.4. Build ZINC “Druglike-Centroid Library”
-    centroid_curator: CentroidLibraryCurator = CentroidLibraryCurator(config=data_config, logger=data_curation_logger)
-    centroid_curator.run()
+    #centroid_curator: CentroidLibraryCurator = CentroidLibraryCurator(config=data_config, logger=data_curation_logger)
+    #centroid_curator.run()
 
     # 1.5. Create “round-0” Candidate Training Dataset, and Validation/Testing Datasets
-    #round0_curator: Round0DatasetCurator = Round0DatasetCurator(config=data_config, logger=data_curation_logger)
-    #round0_curator.run()
+    round0_curator: Round0DatasetCurator = Round0DatasetCurator(config=data_config, logger=data_curation_logger)
+    round0_curator.run()
 
 if __name__ == "__main__":
     main()

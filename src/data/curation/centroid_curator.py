@@ -102,7 +102,8 @@ class CentroidLibraryCurator(BaseCurator):
         # 3. Standardize final centroid SMILES and calculate InChIKey. Use dictionary comprehension to
         #    modify InchIKey dict key to be in line with `BioactiveCompound` objects.
         preprocessed_centroid_records = self._preprocessor.standardize_centroid_compounds(
-            raw_centroid_smiles=final_centroid_smiles
+            raw_centroid_smiles=final_centroid_smiles,
+            batch_size=10_000
         )
         final_centroid_records = []
         for centroid_record in preprocessed_centroid_records:
@@ -121,14 +122,14 @@ class CentroidLibraryCurator(BaseCurator):
             self._logger.info(f"Saving {len(final_centroid_records)} final centroids to {centroid_processed_path}...")
 
             df_centroids = pd.DataFrame(final_centroid_records)
-            df_centroids = df_centroids.drop_duplicates(subset='inchi_key')
+            df_centroids = df_centroids.drop_duplicates(subset='standardized_inchikey')
 
             actives_parquet_path = self._config.get('actives_preprocessed_path')
             df_actives = pd.read_parquet(actives_parquet_path)
 
             if not df_actives.empty:
                 active_keys = df_actives['standardized_inchikey']
-                df_centroids = df_centroids[~df_centroids['inchi_key'].isin(active_keys)]
+                df_centroids = df_centroids[~df_centroids['standardized_inchikey'].isin(active_keys)]
 
             df_centroids.to_parquet(centroid_processed_path, index=False)
             self._logger.info("Centroid library construction complete.")

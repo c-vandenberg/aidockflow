@@ -3,6 +3,7 @@ import time
 import logging
 from typing import Dict, List, Optional
 
+import numpy as np
 import pandas as pd
 from rdkit import Chem
 from rdkit.Chem import Descriptors
@@ -26,7 +27,8 @@ class CentroidLibraryCurator(BaseCurator):
         # 1. ZINC20 3D druglike database has ~690 million compounds. These cannot all
         #    be loaded into memory.
         #    Multi-level hierarchical cluster is therefore needed to iteratively
-        #    cluster the data until the number of centroids is manageable.
+        #    cluster the data to reduce the library size until the number of compounds
+        #    is manageable.
         smiles_input_path = self._config.get('zinc_concat_smiles_path') + '.gzip'
         zinc_library_reduce_dir = self._config.get(
             'zinc_library_reduction_raw_dir',
@@ -262,8 +264,20 @@ class CentroidLibraryCurator(BaseCurator):
                 continue
             try:
                 if use_medoids:
-                    # MEDOID STRATEGY: Pick the member with the highest pop-count (densest).
-                    best_idx = max(cluster_indices, key=lambda i: popcounts[i])
+                    cluster_size = len(cluster_indices)
+                    if cluster_size <= 256:
+                        # Use exact medoid for smaller clusters
+                        best_idx = self._true_medoid_idx(
+                            cluster_indices, fp_array, popcounts
+                        )
+                    else:
+                        # Use popcount-median heuristic (O(cluster_size) complexity) for larger clusters.
+                        median_pc = np.median(popcounts[list(cluster_indices)])
+                        best_idx = min(
+                            cluster_indices,
+                            key=lambda i: abs(popcounts[i] - median_pc)
+                        )
+
                     sub_reps.append(valid_smiles[best_idx])
                 else:
                     # CENTROID STRATEGY: Pick the member with the smallest molecular weight.
@@ -287,3 +301,31 @@ class CentroidLibraryCurator(BaseCurator):
         )
 
         return sub_reps
+
+    @staticmethod
+    def _true_medoid_idx(
+        cluster_idx: List[int],
+        fp_uint8: np.ndarray,
+        popcounts: np.ndarray
+    ) -> int:
+        """
+        Return the index (into fp_uint8) of the true medoid:
+        the member with the highest mean Tanimoto to all others.
+        Only called for small clusters (<= 256) — O(|C|^2).
+        """
+        if len(cluster_idx) == 1:
+            # singleton cluster – the only member is trivially its own medoid
+            return cluster_idx[0]
+
+        idx_arr = np.asarray(cluster_idx, dtype=int)  # (C,)
+        sub = fp_uint8[idx_arr]  # (C, 128) uint8
+        inter = np.bitwise_and(
+            sub[:, None, :],  # (C, 1, 128)
+            sub[None, :, :]  # (1, C, 128)
+        ).sum(2, dtype=np.uint16)  # (C, C) intersection popcount
+
+        pc = popcounts[idx_arr].astype(np.int32) # (C, 1)
+        denom = pc[:, None] + pc[None, :] - inter # (C, C)
+        sims = inter / denom  # (C, C) Tanimoto
+
+        return cluster_idx[int(sims.mean(1).argmax())]

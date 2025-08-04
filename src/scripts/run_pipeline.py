@@ -11,7 +11,7 @@ from src.data.curation.zinc_curator import ZincDatabaseCurator
 from src.data.curation.centroid_curator import CentroidLibraryCurator
 from src.data.loading.actives_loader import HighFidelityActivesDataLoader
 from src.data.curation.round0_curator import Round0DatasetCurator
-from src.utils.file_utils import count_gzip_lines, create_random_sample_gzip_file
+from src.data.curation.target_structure_curator import TargetStructureCurator
 
 
 def parse_config_argument():
@@ -110,8 +110,12 @@ def main():
     #centroid_curator.run()
 
     # 1.5. Create “round-0” Candidate Training Dataset, and Validation/Testing Datasets
-    round0_curator: Round0DatasetCurator = Round0DatasetCurator(config=data_config, logger=data_curation_logger)
-    round0_curator.run()
+    #round0_curator: Round0DatasetCurator = Round0DatasetCurator(config=data_config, logger=data_curation_logger)
+    #round0_curator.run()
+
+    # 1.6. Prepare the Target Protein Structure for Docking
+    target_curator: TargetStructureCurator = TargetStructureCurator(config=data_config, logger=data_curation_logger)
+    target_curator.run()
 
 if __name__ == "__main__":
     main()

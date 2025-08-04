@@ -90,7 +90,7 @@ class Round0DatasetCurator(BaseCurator):
 
     def _split_negatives(self, df_sampled: pd.DataFrame) -> (pd.DataFrame, pd.DataFrame, pd.DataFrame):
         """
-        Performs a random split on the sampled negative compounds.
+        Performs a random split on the sampled negative (centroids) compounds.
 
         Takes the DataFrame of sampled centroids and splits it into
         training, validation, and testing sets based on the configured
@@ -119,12 +119,12 @@ class Round0DatasetCurator(BaseCurator):
 
         # 2.2. Next, split the preliminary set into the final training and validation sets.
         #      The validation size must be adjusted to be a fraction of the remaining data.
-        #      Create the validation set from the remainder
+        #      Create the validation set from the remainder.
         df_train_neg, df_val_neg = train_test_split(
             df_train_val_neg, test_size=val_size / (1 - test_size), random_state=random_state
         )
         self._logger.info(
-            f"Split negatives into Train/Val/Test sets with sizes: "
+            f"Split negatives (centroids) into Train/Val/Test sets with sizes: "
             f"{len(df_train_neg)}/{len(df_val_neg)}/{len(df_test_neg)}"
         )
 
@@ -172,11 +172,12 @@ class Round0DatasetCurator(BaseCurator):
                 df_pos = pd.read_parquet(set_paths['pos'])
                 df_full = pd.concat([df_pos, set_paths['neg']], ignore_index=True)
                 self._logger.info(
-                    f"Created '{set_name}' set with {len(df_pos)} positives and {len(set_paths['neg'])} negatives.")
+                    f"Created '{set_name}' set with {len(df_pos)} positives and {len(set_paths['neg'])} negatives."
+                )
 
                 # 3.3. Save the combined dataset to a gzipped `.smi` file.
                 self._save_to_smi_gz(df_full, set_paths['out'])
-            except FileNotFoundError:
+            except FileNotFoundError as e:
                 self._logger.error(f"Positive set file not found: {set_paths['pos']}")
             except Exception as e:
                 self._logger.error(f"Failed to create or save '{set_name}' set: {e}")
@@ -196,6 +197,8 @@ class Round0DatasetCurator(BaseCurator):
         output_path : str
             The base path for the output .smi file (without extension).
         """
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
         # 3.4. Deduplicate by InChIKey and shuffle the final dataset randomly.
         df_shuffled = dataframe.drop_duplicates(subset='standardized_inchikey').sample(frac=1)
 
@@ -208,7 +211,7 @@ class Round0DatasetCurator(BaseCurator):
             sep='\t',
             header=False,
             index=False,
-            columns=['smiles', 'inchi_key']
+            columns=['smiles', 'standardized_inchikey']
         )
 
         # 3.6. Compress the .smi file and remove the original uncompressed version.

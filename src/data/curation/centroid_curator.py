@@ -3,16 +3,17 @@ import time
 import logging
 from typing import Dict, List, Optional
 
+import numpy as np
 import pandas as pd
 from rdkit import Chem
 from rdkit.Chem import Descriptors
 from concurrent.futures.thread import ThreadPoolExecutor
 
 from src.data.curation.base_curator import BaseCurator
-from src.utils.file_utils import compress_and_delete_file, stream_lines_from_gzip_file
+from src.utils.file_utils import compress_and_delete_file, stream_lines_from_gzip_file, count_gzip_lines
 from src.utils.fingerprint_utils import smiles_to_morgan_fp, fingerprints_to_numpy
 from src.utils.clustering_utils import faiss_butina_cluster
-from data.preprocessing.compound_preprocessing import CompoundDataPreprocessor
+from src.data.preprocessing.compound_preprocessing import CompoundDataPreprocessor
 
 
 class CentroidLibraryCurator(BaseCurator):
@@ -26,7 +27,8 @@ class CentroidLibraryCurator(BaseCurator):
         # 1. ZINC20 3D druglike database has ~690 million compounds. These cannot all
         #    be loaded into memory.
         #    Multi-level hierarchical cluster is therefore needed to iteratively
-        #    cluster the data until the number of centroids is manageable.
+        #    cluster the data to reduce the library size until the number of compounds
+        #    is manageable.
         smiles_input_path = self._config.get('zinc_concat_smiles_path') + '.gzip'
         zinc_library_reduce_dir = self._config.get(
             'zinc_library_reduction_raw_dir',
@@ -48,43 +50,62 @@ class CentroidLibraryCurator(BaseCurator):
 
         round_num = 1
         max_in_memory_size = self._config.get('max_in_memory_centroids', 200_000_000)
+        num_smiles = count_gzip_lines(smiles_input_path)
 
-        while True:
-            reps_output_path = f'{zinc_library_reduce_dir}/round_{round_num}_{representatives}.smi'
-            num_reps = self._run_clustering_round(
-                smiles_input_path=smiles_input_path,
-                representatives_output_path=reps_output_path,
-                round_num=round_num,
-                use_medoids=use_medoids_for_reduction
+        if num_smiles <= max_in_memory_size:
+            self._logger.info(
+                f'Initial number of SMILES ({num_smiles}) is small enough for in-memory clustering. '
+                f'No SMILES library reduction required. '
             )
-
-            if num_reps <= max_in_memory_size:
+            centroid_smiles = list(stream_lines_from_gzip_file(smiles_input_path))
+            final_centroid_smiles = self._process_smiles_batch(
+                smiles_batch=centroid_smiles,
+                tanimoto_cutoff=self._config.get('tanimoto_cluster_cutoff', 0.6),
+                round_num=round_num,
+                use_medoids=False
+            )
+        else:
+            self._logger.info(
+                f'Initial number of SMILES ({num_smiles}) is too large for in-memory clustering. '
+                f'Beginning SMILES library reduction'
+            )
+            while True:
                 reps_output_path = f'{zinc_library_reduce_dir}/round_{round_num}_{representatives}.smi'
-                self._logger.info(
-                    f'Number of representatives ({num_reps}) is small enough for final in-memory clustering.'
+                num_reps = self._run_clustering_round(
+                    smiles_input_path=smiles_input_path,
+                    representatives_output_path=reps_output_path,
+                    round_num=round_num,
+                    use_medoids=use_medoids_for_reduction
                 )
-                final_sub_centroids_path = reps_output_path + '.gzip'
-                break
 
-            # Prepare for next clustering round
-            smiles_input_path = reps_output_path + '.gzip'
-            round_num += 1
+                if num_reps <= max_in_memory_size:
+                    reps_output_path = f'{zinc_library_reduce_dir}/round_{round_num}_{representatives}.smi'
+                    self._logger.info(
+                        f'Number of representatives ({num_reps}) is small enough for final in-memory clustering.'
+                    )
+                    final_sub_centroids_path = reps_output_path + '.gzip'
+                    break
 
-        # 2. Perform a final clustering on the aggregated sub-centroids, which now fit in memory.
-        self._logger.info(f"Loading final sub-centroids from {final_sub_centroids_path} for final clustering...")
-        final_sub_centroids = list(stream_lines_from_gzip_file(final_sub_centroids_path))
+                # Prepare for next clustering round
+                smiles_input_path = reps_output_path + '.gzip'
+                round_num += 1
 
-        final_centroid_smiles = self._process_smiles_batch(
-            smiles_batch=final_sub_centroids,
-            tanimoto_cutoff=self._config.get('tanimoto_cluster_cutoff', 0.6),
-            round_num=round_num,
-            use_medoids=False
-        )
+            # 2. Perform a final clustering on the aggregated sub-centroids, which now fit in memory.
+            self._logger.info(f"Loading final sub-centroids from {final_sub_centroids_path} for final clustering...")
+            final_sub_centroids = list(stream_lines_from_gzip_file(final_sub_centroids_path))
+
+            final_centroid_smiles = self._process_smiles_batch(
+                smiles_batch=final_sub_centroids,
+                tanimoto_cutoff=self._config.get('tanimoto_cluster_cutoff', 0.6),
+                round_num=round_num,
+                use_medoids=False
+            )
 
         # 3. Standardize final centroid SMILES and calculate InChIKey. Use dictionary comprehension to
         #    modify InchIKey dict key to be in line with `BioactiveCompound` objects.
         preprocessed_centroid_records = self._preprocessor.standardize_centroid_compounds(
-            raw_centroid_smiles=final_centroid_smiles
+            raw_centroid_smiles=final_centroid_smiles,
+            batch_size=10_000
         )
         final_centroid_records = []
         for centroid_record in preprocessed_centroid_records:
@@ -103,14 +124,14 @@ class CentroidLibraryCurator(BaseCurator):
             self._logger.info(f"Saving {len(final_centroid_records)} final centroids to {centroid_processed_path}...")
 
             df_centroids = pd.DataFrame(final_centroid_records)
-            df_centroids = df_centroids.drop_duplicates(subset='inchi_key')
+            df_centroids = df_centroids.drop_duplicates(subset='standardized_inchikey')
 
             actives_parquet_path = self._config.get('actives_preprocessed_path')
             df_actives = pd.read_parquet(actives_parquet_path)
 
             if not df_actives.empty:
                 active_keys = df_actives['standardized_inchikey']
-                df_centroids = df_centroids[~df_centroids['inchi_key'].isin(active_keys)]
+                df_centroids = df_centroids[~df_centroids['standardized_inchikey'].isin(active_keys)]
 
             df_centroids.to_parquet(centroid_processed_path, index=False)
             self._logger.info("Centroid library construction complete.")
@@ -243,8 +264,20 @@ class CentroidLibraryCurator(BaseCurator):
                 continue
             try:
                 if use_medoids:
-                    # MEDOID STRATEGY: Pick the member with the highest pop-count (densest).
-                    best_idx = max(cluster_indices, key=lambda i: popcounts[i])
+                    cluster_size = len(cluster_indices)
+                    if cluster_size <= 256:
+                        # Use exact medoid for smaller clusters
+                        best_idx = self._true_medoid_idx(
+                            cluster_indices, fp_array, popcounts
+                        )
+                    else:
+                        # Use popcount-median heuristic (O(cluster_size) complexity) for larger clusters.
+                        median_pc = np.median(popcounts[list(cluster_indices)])
+                        best_idx = min(
+                            cluster_indices,
+                            key=lambda i: abs(popcounts[i] - median_pc)
+                        )
+
                     sub_reps.append(valid_smiles[best_idx])
                 else:
                     # CENTROID STRATEGY: Pick the member with the smallest molecular weight.
@@ -268,3 +301,31 @@ class CentroidLibraryCurator(BaseCurator):
         )
 
         return sub_reps
+
+    @staticmethod
+    def _true_medoid_idx(
+        cluster_idx: List[int],
+        fp_uint8: np.ndarray,
+        popcounts: np.ndarray
+    ) -> int:
+        """
+        Return the index (into fp_uint8) of the true medoid:
+        the member with the highest mean Tanimoto to all others.
+        Only called for small clusters (<= 256) — O(|C|^2).
+        """
+        if len(cluster_idx) == 1:
+            # singleton cluster – the only member is trivially its own medoid
+            return cluster_idx[0]
+
+        idx_arr = np.asarray(cluster_idx, dtype=int)  # (C,)
+        sub = fp_uint8[idx_arr]  # (C, 128) uint8
+        inter = np.bitwise_and(
+            sub[:, None, :],  # (C, 1, 128)
+            sub[None, :, :]  # (1, C, 128)
+        ).sum(2, dtype=np.uint16)  # (C, C) intersection popcount
+
+        pc = popcounts[idx_arr].astype(np.int32) # (C, 1)
+        denom = pc[:, None] + pc[None, :] - inter # (C, C)
+        sims = inter / denom  # (C, C) Tanimoto
+
+        return cluster_idx[int(sims.mean(1).argmax())]

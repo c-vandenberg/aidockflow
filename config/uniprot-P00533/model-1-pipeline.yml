@@ -1,28 +1,31 @@
 data:
   # Data directories
-  data_raw_dir: "data/raw"
-  data_preprocessed_dir: "data/preprocessed"
-  data_processed_dir: "data/processed"
+  data_raw_dir: 'data/raw'
+  data_preprocessed_dir: 'data/preprocessed'
+  data_processed_dir: 'data/processed'
+
+  # Target IDs
+  uniprot_id: 'P00533'
+  pdb_id: '1AKE'
 
   # High fidelity actives (ChEMBL, PubChem) curation
-  uniprot_id: "P00533"
   bioactivity_measures: [
-    "Kd",
-    "Ki"
+    'Kd',
+    'Ki'
   ]
   bioactivity_threshold: 1000
-  actives_preprocessed_path: "data/preprocessed/P00533/actives/standardized_actives.parquet"
-  actives_train_pos_path: "data/preprocessed/P00533/actives/train_pos.parquet"
-  actives_val_pos_path: "data/preprocessed/P00533/actives/val_pos.parquet"
-  actives_test_pos_path: "data/preprocessed/P00533/actives/test_pos.parquet"
-  cache_dir: "data/raw/actives/cache/P00533"
+  actives_preprocessed_path: '../data/preprocessed/P00533/actives/standardized_actives.parquet'
+  actives_train_pos_path: '../data/preprocessed/P00533/actives/train_pos.parquet'
+  actives_val_pos_path: '../data/preprocessed/P00533/actives/val_pos.parquet'
+  actives_test_pos_path: '../data/preprocessed/P00533/actives/test_pos.parquet'
+  cache_dir: '../data/raw/actives/cache/P00533'
 
   # ZINC15 3D druglike centroid library curation
-  zinc_downloader_script_path: "resources/download-scripts/ZINC-downloader-3D-smi.wget"
-  zinc_raw_data_output_dir: "data/raw/ZINC20-3D-druglike-database"
-  zinc_concat_smiles_path: "data/raw/ZINC20-3D-druglike-SMILES/raw_smiles.smi"
-  zinc_library_reduction_raw_dir: "data/raw/ZINC20-3D-druglike-centroids/library-reduction/medoid-test"
-  centroids_processed_path: "data/preprocessed/ZINC20-3D-druglike-centroids/centroid_pool.parquet"
+  zinc_downloader_script_path: '../resources/download-scripts/ZINC-downloader-3D-smi.wget'
+  zinc_raw_data_output_dir: '../data/raw/ZINC20-3D-druglike-database'
+  zinc_concat_smiles_path: '../data/raw/ZINC20-3D-druglike-centroids/library-reduction/medoid-test/round_2_medoids.smi'
+  zinc_library_reduction_raw_dir: '../data/raw/ZINC20-3D-druglike-centroids/library-reduction/medoid-test-2'
+  centroids_processed_path: '../data/preprocessed/ZINC20-3D-druglike-centroids/test/test_50_000_centroid_pool.parquet'
   max_workers: 10
   max_in_memory_centroids: 15_000_000
   clustering_batch_size: 1_000_000
@@ -30,19 +33,23 @@ data:
   tanimoto_cluster_cutoff: 0.6
 
   # Round 0 Dataset Curation
-  round0_n_sample: 500000
-  round0_unsampled_centroid_pool_path: "data/preprocessed/P00533/round-0/round0_unsampled_centroid_pool.parquet"
-  round0_train_smi_path: "data/preprocessed/P00533/round-0/round0_full_train.smi"
-  validation_smi_path: "data/preprocessed/P00533/validation/full_val.smi"
-  testing_smi_path: "data/preprocessed/P00533/testing/full_test.smi"
+  round0_n_sample: 5000
+  round0_unsampled_centroid_pool_path: '../data/preprocessed/P00533/testing/round-0/round0_unsampled_centroid_pool.parquet'
+  round0_train_smi_path: '../data/preprocessed/P00533/testing/round-0/train/round0_full_train.smi'
+  validation_smi_path: '../data/preprocessed/P00533/testing/validation/full_val.smi'
+  testing_smi_path: '../data/preprocessed/P00533/testing/test/full_test.smi'
+
+  # Target Structure Curation
+  target_prep_dir: '../data/processed/P00533/target'
+  target_structure_database: 'AlphaFold'
 
   # Data loading
   test_split: 0.15
   validation_split: 0.15
   random_state: 42
 
-  data_curation_log_dir: "var/log/processing/P00533/data_curation/metoid-test"
-  training_log_dir: "var/log/processing/P00533/training"
+  data_curation_log_dir: '../var/log/processing/P00533/data_curation/metoid-test'
+  training_log_dir: '../var/log/processing/P00533/training'
 
 model:
 

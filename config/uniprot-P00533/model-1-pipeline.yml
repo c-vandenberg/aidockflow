@@ -4,8 +4,11 @@ data:
   data_preprocessed_dir: 'data/preprocessed'
   data_processed_dir: 'data/processed'
 
-  # High fidelity actives (ChEMBL, PubChem) curation
+  # Target IDs
   uniprot_id: 'P00533'
+  pdb_id: '1AKE'
+
+  # High fidelity actives (ChEMBL, PubChem) curation
   bioactivity_measures: [
     'Kd',
     'Ki'
@@ -38,6 +41,7 @@ data:
 
   # Target Structure Curation
   target_prep_dir: '../data/processed/P00533/target'
+  target_structure_database: 'AlphaFold'
 
   # Data loading
   test_split: 0.15

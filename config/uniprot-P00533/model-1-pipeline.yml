@@ -42,6 +42,9 @@ data:
   # Target Structure Curation
   target_prep_dir: '../data/processed/P00533/target'
   target_structure_database: 'AlphaFold'
+  rosetta_relax_executable: '/opt/rosetta.source.release-371/main/source/bin/relax.default.linuxgccrelease'
+  mgl_tools_executable: '/opt/mgltools_x86_64Linux2_1.5.7/bin/pythonsh'
+  mgl_tools_prepare_receptor_script_path: '/opt/mgltools_x86_64Linux2_1.5.7/MGLToolsPckgs/AutoDockTools/Utilities24/prepare_receptor4.py'
 
   # Data loading
   test_split: 0.15

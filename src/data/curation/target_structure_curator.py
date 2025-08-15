@@ -47,33 +47,32 @@ class TargetStructureCurator(BaseCurator):
             raise FileNotFoundError(f"Rosetta executable not found at: {rosetta_relax_executable}")
 
         raw_pdb_path = os.path.join(self._target_prep_dir, f'{target_id}_raw.pdb')
-        fixed_pdb_path = os.path.join(self._target_prep_dir, f'{target_id}_fixed.pdb')
-        protonated_pdb_path = os.path.join(self._target_prep_dir, f'{target_id}_protonated.pdb')
-        hydrogens_pdb_path = os.path.join(self._target_prep_dir, f'{target_id}_hydrogens.pdb')
+        cleaned_heavy_atom_pdb_path = os.path.join(self._target_prep_dir, f"{target_id}_cleaned_heavy.pdb")
+        protonated_heavy_atom_pdb_path = os.path.join(self._target_prep_dir, f"{target_id}_protonated_heavy.pdb")
         relaxed_pdb_path = os.path.join(self._target_prep_dir,f'{target_id}_relaxed.pdb')
         final_pdbqt_path = os.path.join(self._target_prep_dir, f'{target_id}_target_final.pdbqt')
 
         try:
-            # 1. Download target 3D structure from AlphaFold DB
+            # Step 1. Download target 3D structure from AlphaFold DB
             #self._download_structure(target_id=target_id, structure_source=target_source, output_path=raw_pdb_path)
 
-            # 2. Use PDBFixer to add missing residues/atoms
-            self._run_openbabel_clean(raw_pdb_path, fixed_pdb_path)
+            # Step 2. Use OpenBabel to clean heavy atoms only and remove hydrogen atoms
+            self._run_openbabel_clean_heavy_atoms_only(input_pdb=raw_pdb_path, output_pdb=cleaned_heavy_atom_pdb_path)
 
-            # 3. Use PROPKA to add pH 7.4 protonation
-            self._run_propka(fixed_pdb_path, protonated_pdb_path)
+            # Step 3. Use PROPKA to add pH 7.4 protonation and add protonated residue names
+            self._run_propka(
+                input_pdb=cleaned_heavy_atom_pdb_path,
+                output_pdb=protonated_heavy_atom_pdb_path
+            )
 
-            # 4. Use OpenBabel to add hydrogens
-            self._run_openbabel_add_hydrogens(protonated_pdb_path, hydrogens_pdb_path)
-
-            # 5. Energy-minimize side chains with Rosetta FastRelax
+            # Step 4. Energy-minimize side chains with Rosetta FastRelax
             self._run_rosetta_relax(
-                input_pdb=hydrogens_pdb_path,
+                input_pdb=cleaned_heavy_atom_pdb_path,
                 output_pdb=relaxed_pdb_path,
                 rosetta_relax_exe=rosetta_relax_executable
             )
 
-            # 6. Convert to PDBQT with AutoDock Tools
+            # Step 5. Convert to PDBQT with AutoDock Tools
             self._run_autodock_prepare(relaxed_pdb_path, final_pdbqt_path)
 
             self._logger.info(f'Successfully prepared target. Final files:')
@@ -127,20 +126,34 @@ class TargetStructureCurator(BaseCurator):
         if result.stderr:
             self._logger.warning(f'STDERR: {result.stderr}')
 
-    def _run_openbabel_clean(self, input_pdb: str, output_pdb: str):
+    def _run_openbabel_clean_heavy_atoms_only(self, input_pdb: str, output_pdb: str):
         """
         Repairs a PDB file using OpenBabel.
         """
-        # Deletes all non-standard residues (-xrd), alternate locations (-xrt),
-        # and water molecules (-d), creating a clean file for PROPKA.
-        command = [
-            'obabel', input_pdb,
-            '-O', output_pdb,
-            '-xrd',
-            '-xrt',
-            '-d'
-        ]
-        self._run_command(command)
+        self._logger.info("Step 2: Cleaning PDB and removing hydrogens with OpenBabel...")
+
+        # CLI Command: `openbabel input_pdb -O output_pdb -xrd -xrt -d`
+        ob_conversion = openbabel.OBConversion()
+        ob_conversion.SetInAndOutFormats('pdb', 'pdb')
+
+        # Corresponds to '-xrd' CLI flag: Deletes residues with unrecognized atoms.
+        ob_conversion.AddOption('x', openbabel.OBConversion.INOPTIONS, 'rd')
+
+        # Corresponds to '-xrt' CLI flag: Deletes alternate location specifiers.
+        ob_conversion.AddOption('x', openbabel.OBConversion.INOPTIONS, 'rt')
+
+        mol = openbabel.OBMol()
+
+        # Read the input file and apply the cleaning options
+        ob_conversion.ReadFile(mol, input_pdb)
+
+        # Corresponds to '-d' CLI flag: Deletes all hydrogen atoms.
+        # We allow Rosetta to add hydrogens later.
+        mol.DeleteHydrogens()
+
+        # Write the cleaned, heavy-atom-only `mol` to the output file.
+        ob_conversion.WriteFile(mol, output_pdb)
+
         self._logger.info(f"OpenBabel cleaning complete. Cleaned structure saved to {output_pdb}")
 
     def _run_pdbfixer(self, input_pdb: str, output_pdb: str):
@@ -190,25 +203,16 @@ class TargetStructureCurator(BaseCurator):
         self._logger.info(f"PROPKA analysis and PDB modification complete. Protonated structure at {output_pdb}")
 
     def _run_openbabel_add_hydrogens(self, input_pdb: str, output_pdb: str):
-        """Adds hydrogen atoms using OpenBabel."""
+        """Adds hydrogen atoms using the OpenBabel command line."""
         self._logger.info('Step 4: Adding hydrogens with OpenBabel...')
+
         ob_conversion = openbabel.OBConversion()
         ob_conversion.SetInAndOutFormats('pdb', 'pdb')
-
         mol = openbabel.OBMol()
         ob_conversion.ReadFile(mol, input_pdb)
-
-        # Add Rosetta-specific options before adding hydrogens to clean file in a way
-        # Rosetta expects:
-        #   1. '-x_rd': Remove residues with unknown atom names.
-        #   2. '-x_rt': Remove alternate locations and keep only the first one listed.
-        ob_conversion.AddOption("x", openbabel.OBConversion.INOPTIONS, "rd")
-        ob_conversion.AddOption("x", openbabel.OBConversion.INOPTIONS, "rt")
-
         mol.AddHydrogens()
-        ob_conversion.WriteFile(mol, output_pdb)
 
-        self._logger.info(f'OpenBabel complete. Structure with hydrogens saved to {output_pdb}')
+        self._logger.info(f'OpenBabel hydrogen addition complete. Structure saved to {output_pdb}')
 
     def _run_rosetta_relax(self, input_pdb: str, output_pdb: str, rosetta_relax_exe: str):
         """Performs energy minimization using Rosetta's FastRelax protocol."""
@@ -220,7 +224,8 @@ class TargetStructureCurator(BaseCurator):
             '-relax:constrain_relax_to_start_coords',
             '-relax:coord_constrain_sidechains',
             '-relax:ramp_constraints false',
-            '-nstruct', '1'
+            '-nstruct', '1',
+            '-out:path:all', os.path.dirname(output_pdb)
         ]
         self._run_command(command)
         relaxed_source_path = input_pdb.replace('.pdb', '_0001.pdb')

@@ -75,7 +75,7 @@ def create_random_sample_gzip_file(
 
 def count_gzip_lines(gzip_file_path: str):
     with gzip.open(filename=gzip_file_path, mode='rt', encoding='utf-8') as file:
-        return sum(1 for line in file)
+        return len(file.readlines())
 
 
 def validate_file_extension(file_path: str, valid_file_ext: str, logger: Optional[logging.Logger]):

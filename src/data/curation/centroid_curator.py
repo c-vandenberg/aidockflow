@@ -11,8 +11,8 @@ from concurrent.futures.thread import ThreadPoolExecutor
 
 from src.data.curation.base_curator import BaseCurator
 from src.utils.file_utils import compress_and_delete_file, stream_lines_from_gzip_file, count_gzip_lines
-from src.utils.fingerprint_utils import smiles_to_morgan_fp, fingerprints_to_numpy
-from src.utils.clustering_utils import faiss_butina_cluster
+from src.utils.fingerprint_utils import smiles_to_morgan_fp, fingerprints_to_numpy, compute_fp_batch, iter_fp_batches
+from src.utils.clustering_utils import faiss_butina_cluster, consolidate_representatives, true_medoid_idx
 from src.data.preprocessing.compound_preprocessing import CompoundDataPreprocessor
 
 
@@ -49,7 +49,8 @@ class CentroidLibraryCurator(BaseCurator):
             representatives = 'centroids'
 
         round_num = 1
-        max_in_memory_size = self._config.get('max_in_memory_centroids', 200_000_000)
+        max_in_memory_size = self._config.get('centroid_library_memory_threshold', 15_000_000)
+        consolidate_threshold = self._config.get('consolidation_threshold', 55_000_000)
         num_smiles = count_gzip_lines(smiles_input_path)
 
         if num_smiles <= max_in_memory_size:
@@ -85,10 +86,23 @@ class CentroidLibraryCurator(BaseCurator):
                     )
                     final_sub_centroids_path = reps_output_path + '.gzip'
                     break
-
-                # Prepare for next clustering round
-                smiles_input_path = reps_output_path + '.gzip'
-                round_num += 1
+                elif num_smiles <= consolidate_threshold:
+                    self._logger.info(
+                        f"Reps = {num_smiles} ≤ {consolidate_threshold}. Running a global consolidation pass…"
+                    )
+                    consolidated_gz = f"{reps_output_path}.consolidated.gzip"
+                    self._global_consolidate(
+                        reps_gz_path=reps_output_path + '.gzip',
+                        output_gz_path=consolidated_gz,
+                        tanimoto_cutoff=self._config.get('tanimoto_cluster_cutoff', 0.6)
+                    )
+                    # Use the consolidated file as the next round’s input
+                    smiles_input_path = consolidated_gz
+                    round_num += 1
+                else:
+                    # Prepare for next clustering round
+                    smiles_input_path = reps_output_path + '.gzip'
+                    round_num += 1
 
             # 2. Perform a final clustering on the aggregated sub-centroids, which now fit in memory.
             self._logger.info(f"Loading final sub-centroids from {final_sub_centroids_path} for final clustering...")
@@ -148,7 +162,7 @@ class CentroidLibraryCurator(BaseCurator):
         self._logger.info(f'Starting clustering round {round_num} on file: {smiles_input_path}')
         uncompressed_reps_path = representatives_output_path
         gzipped_reps_path = uncompressed_reps_path + '.gzip'
-        batch_size = self._config.get('clustering_batch_size', 100_000_000)
+        batch_size = self._config.get('batch_size', 1_000_000)
         tanimoto_cutoff = self._config.get('tanimoto_cluster_cutoff', 0.6)
         smiles_stream = stream_lines_from_gzip_file(smiles_input_path)
 
@@ -267,7 +281,7 @@ class CentroidLibraryCurator(BaseCurator):
                     cluster_size = len(cluster_indices)
                     if cluster_size <= 256:
                         # Use exact medoid for smaller clusters
-                        best_idx = self._true_medoid_idx(
+                        best_idx = true_medoid_idx(
                             cluster_indices, fp_array, popcounts
                         )
                     else:
@@ -302,30 +316,38 @@ class CentroidLibraryCurator(BaseCurator):
 
         return sub_reps
 
-    @staticmethod
-    def _true_medoid_idx(
-        cluster_idx: List[int],
-        fp_uint8: np.ndarray,
-        popcounts: np.ndarray
-    ) -> int:
-        """
-        Return the index (into fp_uint8) of the true medoid:
-        the member with the highest mean Tanimoto to all others.
-        Only called for small clusters (<= 256) — O(|C|^2).
-        """
-        if len(cluster_idx) == 1:
-            # singleton cluster – the only member is trivially its own medoid
-            return cluster_idx[0]
+    def _global_consolidate(
+        self,
+        reps_gz_path: str,
+        output_gz_path: str,
+        tanimoto_cutoff: float
+    ):
+        self._logger.info(f"Global consolidation: loading {reps_gz_path}")
 
-        idx_arr = np.asarray(cluster_idx, dtype=int)  # (C,)
-        sub = fp_uint8[idx_arr]  # (C, 128) uint8
-        inter = np.bitwise_and(
-            sub[:, None, :],  # (C, 1, 128)
-            sub[None, :, :]  # (1, C, 128)
-        ).sum(2, dtype=np.uint16)  # (C, C) intersection popcount
+        batch_size = self._config.get('batch_size', 1_000_000)
+        smiles_iter = stream_lines_from_gzip_file(reps_gz_path)
 
-        pc = popcounts[idx_arr].astype(np.int32) # (C, 1)
-        denom = pc[:, None] + pc[None, :] - inter # (C, C)
-        sims = inter / denom  # (C, C) Tanimoto
+        all_smiles, fp_chunks = [], []
+        for chunk_smiles, fp_uint8 in iter_fp_batches(smiles_iter=smiles_iter, batch_size=batch_size):
+            all_smiles.extend(chunk_smiles)
+            fp_chunks.append(fp_uint8)
 
-        return cluster_idx[int(sims.mean(1).argmax())]
+        if not fp_chunks:
+            self._logger.warning("Global consolidation: no valid reps found; skipping.")
+            return
+
+        fp_uint8 = np.vstack(fp_chunks)
+
+        new_smiles, _keep_idx = consolidate_representatives(
+            fp_uint8=fp_uint8,
+            smiles=all_smiles,
+            tanimoto_cutoff=tanimoto_cutoff,
+            batch_q=4096,
+        )
+
+        tmp_out = output_gz_path[:-5]
+        with open(tmp_out, "w") as f:
+            f.write("\n".join(new_smiles))
+            f.write("\n")
+
+        compress_and_delete_file(tmp_out, output_gz_path, self._logger)

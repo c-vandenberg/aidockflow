@@ -1,4 +1,7 @@
+from typing import Iterable
+
 import numpy as np
+from concurrent.futures import ThreadPoolExecutor
 from rdkit import Chem, DataStructs
 
 BYTES_PER_FP = 1024 // 8 # 128
@@ -31,3 +34,40 @@ def fingerprints_to_numpy(fps: list) -> np.ndarray:
     arr = np.frombuffer(as_bytes, dtype=np.uint8)
 
     return arr.reshape(len(fps), BYTES_PER_FP)
+
+
+def compute_fp_batch(smiles_list: list[str], max_workers: int = 16):
+    """
+    SMILES -> (kept_smiles, fp_uint8) for one batch.
+    Returns ([], None) if nothing valid in the batch.
+    """
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        pairs = [p for p in ex.map(smiles_to_morgan_fp, smiles_list) if p]
+
+    if not pairs:
+        return [], None
+
+    batch_smiles, batch_fps = zip(*pairs)  # tuples
+    fp_uint8 = fingerprints_to_numpy(list(batch_fps))  # (n, 128) uint8
+
+    return list(batch_smiles), fp_uint8
+
+
+def iter_fp_batches(smiles_iter: Iterable[str], batch_size: int = 1_000_000, max_workers: int = 16):
+    """
+    Stream a gz file of SMILES and yield (batch_smiles, fp_uint8) per batch.
+    Skips empty/invalid batches.
+    """
+    buf: list[str] = []
+    for s in smiles_iter:
+        buf.append(s)
+        if len(buf) >= batch_size:
+            chunk_smiles, fp_uint8 = compute_fp_batch(buf, max_workers=max_workers)
+            if fp_uint8 is not None:
+                yield chunk_smiles, fp_uint8
+            buf.clear()
+
+    if buf:
+        chunk_smiles, fp_uint8 = compute_fp_batch(buf, max_workers=max_workers)
+        if fp_uint8 is not None:
+            yield chunk_smiles, fp_uint8

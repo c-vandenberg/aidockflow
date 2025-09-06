@@ -23,13 +23,13 @@ data:
   # ZINC15 3D druglike centroid library curation
   zinc_downloader_script_path: '../resources/download-scripts/ZINC-downloader-3D-smi.wget'
   zinc_raw_data_output_dir: '../data/raw/ZINC20-3D-druglike-database'
-  zinc_concat_smiles_path: '../data/raw/ZINC20-3D-druglike-centroids/library-reduction/medoid-test/round_2_medoids.smi'
-  zinc_library_reduction_raw_dir: '../data/raw/ZINC20-3D-druglike-centroids/library-reduction/medoid-test-2'
+  zinc_concat_smiles_path: '../data/raw/ZINC20-3D-druglike-centroids/library-reduction/medoid-test-2/round_7_medoids.smi'
+  zinc_library_reduction_raw_dir: '../data/raw/ZINC20-3D-druglike-centroids/library-reduction/global_consolidate'
   centroids_processed_path: '../data/preprocessed/ZINC20-3D-druglike-centroids/test/test_50_000_centroid_pool.parquet'
   max_workers: 10
-  consolidation_threshold: 55,000,000
+  consolidation_threshold: 55_000_000
   centroid_library_memory_threshold: 15_000_000
-  clustering_batch_size: 1_000_000
+  batch_size: 1_000_000
   use_medoids_for_reduction: true
   tanimoto_cluster_cutoff: 0.6
 

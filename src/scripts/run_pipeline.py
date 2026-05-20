@@ -114,8 +114,8 @@ def main():
     #round0_curator.run()
     #
     # 1.6. Prepare the Target Protein Structure for Docking
-    target_curator: TargetStructureCurator = TargetStructureCurator(config=data_config, logger=data_curation_logger)
-    target_curator.run()
+    #target_curator: TargetStructureCurator = TargetStructureCurator(config=data_config, logger=data_curation_logger)
+    #target_curator.run()
 
 if __name__ == "__main__":
     main()

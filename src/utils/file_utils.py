@@ -1,9 +1,12 @@
 import os
 import gzip
+import json
 import random
 import shutil
 import logging
-from typing import Iterator, Optional
+from typing import List, Tuple, Iterator, Optional
+
+import numpy as np
 
 
 def compress_and_delete_file(uncompressed_path: str, compressed_path: str, logger: logging.Logger):
@@ -84,3 +87,71 @@ def validate_file_extension(file_path: str, valid_file_ext: str, logger: Optiona
     if file_ext != valid_file_ext:
         message = f'Input file to process must be a {valid_file_ext} file, {file_path} found'
         logger.error(message) if logger else print(message)
+
+
+def save_fp_cache(cache_base: str, smiles: List[str], fp_batches: List[np.ndarray]) -> None:
+    """
+    Save SMILES and fingerprint chunks to disk.
+    Writes:
+      - {base}.smiles.gz: Gzipped UTF-8 SMILES (one per line, same order as fps)
+      - {base}.fp_uint8.npy: Stacked (N, nbytes) uint8 fingerprint matrix
+      - {base}.batch_sizes.json: List of batch row counts to reconstruct `fp_batch`
+    """
+    os.makedirs(os.path.dirname(cache_base), exist_ok=True)
+
+    # 1) SMILES (gz)
+    smi_path = f"{cache_base}.smiles.gz"
+    with gzip.open(smi_path, "wt", encoding="utf-8") as f:
+        for s in smiles:
+            f.write(s)
+            f.write("\n")
+
+    # 2) Save fingerprint batches as one large matrix
+    if not fp_batches:
+        raise ValueError("Failed to save fingerprints to cache (`save_fp_cache()`): `fp_batches` is empty")
+
+    fp_uint8 = np.vstack(fp_batches)  # (N, nbytes) uint8
+    np.save(f"{cache_base}.fp_uint8.npy", fp_uint8)
+
+    # 3) Batch sizes
+    sizes = [c.shape[0] for c in fp_batches]
+    with open(f"{cache_base}.batch_sizes.json", "w") as f:
+        json.dump(sizes, f)
+
+
+def load_fp_cache(cache_base: str) -> Tuple[List[str], List[np.ndarray]]:
+    """
+    Load SMILES and fingerprint chunks previously saved with save_fp_cache().
+    Returns (all_smiles, fp_chunks).
+    Uses memmap for the big array to allow fast, low-RAM slicing.
+    """
+    smi_path = f"{cache_base}.smiles.gz"
+    fp_path = f"{cache_base}.fp_uint8.npy"
+    sz_path = f"{cache_base}.batch_sizes.json"
+
+    if not (os.path.exists(smi_path) and os.path.exists(fp_path) and os.path.exists(sz_path)):
+        raise FileNotFoundError(f"Missing cache files in '{cache_base}'")
+
+    # 1) SMILES
+    smiles: List[str] = []
+    with gzip.open(smi_path, "rt", encoding="utf-8") as f:
+        for line in f:
+            smiles.append(line.rstrip("\n"))
+
+    # 2) Fingerprint matrix (memmap)
+    fp_uint8 = np.load(fp_path, mmap_mode="r")  # shape (N, nbytes), dtype=uint8
+
+    # 3) Batch sizes -> Split back to list of arrays (views)
+    with open(sz_path, "r") as f:
+        sizes = json.load(f)
+
+    if sum(sizes) != fp_uint8.shape[0]:
+        raise ValueError("Cache inconsistency: `sum(batch_sizes)` != number of rows in `fp_uint8.npy`")
+
+    splits = np.cumsum(sizes[:-1])
+    fp_batches = np.split(fp_uint8, splits, axis=0)  # list of views over the memmap
+
+    if len(smiles) != fp_uint8.shape[0]:
+        raise ValueError("Cache inconsistency: number of SMILES != number of fingerprints")
+
+    return smiles, fp_batches

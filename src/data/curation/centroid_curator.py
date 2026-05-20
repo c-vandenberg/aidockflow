@@ -3,6 +3,7 @@ import time
 import logging
 from typing import Dict, List, Optional
 
+import shutil
 import numpy as np
 import pandas as pd
 from rdkit import Chem
@@ -10,7 +11,8 @@ from rdkit.Chem import Descriptors
 from concurrent.futures.thread import ThreadPoolExecutor
 
 from src.data.curation.base_curator import BaseCurator
-from src.utils.file_utils import compress_and_delete_file, stream_lines_from_gzip_file, count_gzip_lines
+from src.utils.file_utils import (compress_and_delete_file, stream_lines_from_gzip_file, count_gzip_lines,
+                                  save_fp_cache, load_fp_cache)
 from src.utils.fingerprint_utils import smiles_to_morgan_fp, fingerprints_to_numpy, compute_fp_batch, iter_fp_batches
 from src.utils.clustering_utils import faiss_butina_cluster, consolidate_representatives, true_medoid_idx
 from src.data.preprocessing.compound_preprocessing import CompoundDataPreprocessor
@@ -70,14 +72,18 @@ class CentroidLibraryCurator(BaseCurator):
                 f'Initial number of SMILES ({num_smiles}) is too large for in-memory clustering. '
                 f'Beginning SMILES library reduction'
             )
+            num_reps =  54225774
+            reps_output_path = f'{zinc_library_reduce_dir}/round_{round_num}_{representatives}.smi.gzip'
+            shutil.copy(smiles_input_path, reps_output_path)
             while True:
-                reps_output_path = f'{zinc_library_reduce_dir}/round_{round_num}_{representatives}.smi'
-                num_reps = self._run_clustering_round(
-                    smiles_input_path=smiles_input_path,
-                    representatives_output_path=reps_output_path,
-                    round_num=round_num,
-                    use_medoids=use_medoids_for_reduction
-                )
+                if round_num > 1:
+                    reps_output_path = f'{zinc_library_reduce_dir}/round_{round_num}_{representatives}.smi'
+                    num_reps = self._run_clustering_round(
+                        smiles_input_path=smiles_input_path,
+                        representatives_output_path=reps_output_path,
+                        round_num=round_num,
+                        use_medoids=use_medoids_for_reduction
+                    )
 
                 if num_reps <= max_in_memory_size:
                     reps_output_path = f'{zinc_library_reduce_dir}/round_{round_num}_{representatives}.smi'
@@ -90,9 +96,9 @@ class CentroidLibraryCurator(BaseCurator):
                     self._logger.info(
                         f"Reps = {num_smiles} ≤ {consolidate_threshold}. Running a global consolidation pass…"
                     )
-                    consolidated_gz = f"{reps_output_path}.consolidated.gzip"
+                    consolidated_gz = f'{reps_output_path}.consolidate.gzip'
                     self._global_consolidate(
-                        reps_gz_path=reps_output_path + '.gzip',
+                        reps_gz_path=reps_output_path,
                         output_gz_path=consolidated_gz,
                         tanimoto_cutoff=self._config.get('tanimoto_cluster_cutoff', 0.6)
                     )
@@ -322,27 +328,61 @@ class CentroidLibraryCurator(BaseCurator):
         output_gz_path: str,
         tanimoto_cutoff: float
     ):
-        self._logger.info(f"Global consolidation: loading {reps_gz_path}")
+        self._logger.info(f"Global consolidation: Loading {reps_gz_path}")
+        zinc_library_reduce_dir = self._config.get(
+            'zinc_library_reduction_raw_dir',
+            '../data/raw/ZINC20-3D-druglike-centroids/library-reduction'
+        )
+        cache_base = zinc_library_reduce_dir + '/cache'
 
-        batch_size = self._config.get('batch_size', 1_000_000)
-        smiles_iter = stream_lines_from_gzip_file(reps_gz_path)
+        all_smiles, fp_batches = None, None
+        try:
+            self._logger.info(f"Global consolidation: Attempting to load cached fingerprints from {cache_base}* ...")
+            all_smiles, fp_batches = load_fp_cache(cache_base)
+            self._logger.info(f"Loaded cache: {len(all_smiles):,} SMILES, {len(fp_batches)} fingerprint batches")
+        except Exception as e:
+            self._logger.warning(f"Cache not used ({e}); Calculating fingerprints...")
 
-        all_smiles, fp_chunks = [], []
-        for chunk_smiles, fp_uint8 in iter_fp_batches(smiles_iter=smiles_iter, batch_size=batch_size):
-            all_smiles.extend(chunk_smiles)
-            fp_chunks.append(fp_uint8)
+        if all_smiles is None or fp_batches is None:
+            consol_fp_calc_start = time.time()
+            batch_size = self._config.get('batch_size', 1_000_000)
+            smiles_iter = stream_lines_from_gzip_file(reps_gz_path)
 
-        if not fp_chunks:
-            self._logger.warning("Global consolidation: no valid reps found; skipping.")
+            all_smiles, fp_batches = [], []
+            for batch_smiles, fp_uint8 in iter_fp_batches(smiles_iter=smiles_iter, batch_size=batch_size):
+                all_smiles.extend(batch_smiles)
+                fp_batches.append(fp_uint8)
+
+            consol_fp_calc_end = time.time()
+
+            self._logger.info(
+                f'Global consolidation fingerprint calculation time: '
+                f'{round(consol_fp_calc_end - consol_fp_calc_start)} seconds.'
+            )
+
+            try:
+                self._logger.info(f"Saving global consolidation cache to {cache_base}* ...")
+                save_fp_cache(cache_base, all_smiles, fp_batches)
+            except Exception as e:
+                self._logger.warning(f"Failed to save cache ({e}); continuing without cache.")
+
+        if not fp_batches:
+            self._logger.warning("Global consolidation: No valid reps found, skipping.")
             return
 
-        fp_uint8 = np.vstack(fp_chunks)
-
+        fp_uint8 = np.vstack(fp_batches)
+        consolidate_reps_start = time.time()
         new_smiles, _keep_idx = consolidate_representatives(
             fp_uint8=fp_uint8,
             smiles=all_smiles,
             tanimoto_cutoff=tanimoto_cutoff,
             batch_q=4096,
+        )
+        consolidate_reps_end = time.time()
+
+        self._logger.info(
+            f'Global consolidation of representatives time: '
+            f'{round(consolidate_reps_end - consolidate_reps_start)} seconds.'
         )
 
         tmp_out = output_gz_path[:-5]

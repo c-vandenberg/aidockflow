@@ -6,11 +6,13 @@ from faiss.contrib.exhaustive_search import range_search_gpu
 from rdkit import DataStructs
 from rdkit.ML.Cluster import Butina
 
-# BATCH_Q: The number of queries to send to Faiss in a single batch.
+# FAISS_QUERY_BATCH: The number of queries to send to Faiss in a single batch.
 #          This avoids a pure Python loop (1 query at a time) and reduces overhead,
 #          significantly speeding up the process. A value of 4096 is small enough
 #          to fit in a CPU's L3 cache, which is optimal.
-BATCH_Q = 4096
+FAISS_QUERY_BATCH = 4096
+
+_BYTE_POPCOUNT = np.array([bin(i).count("1") for i in range(256)], dtype=np.uint8)
 
 
 def faiss_butina_cluster(
@@ -74,6 +76,8 @@ def faiss_butina_cluster(
         res = faiss.StandardGpuResources()
         gpu_index = faiss.GpuIndexBinaryFlat(res, dimension)
         gpu_index.add(fp_array) # Add the fingerprints to the index
+    else:
+        cpu_index.add(fp_array)
 
     # --- 2. Pre-computation for Efficiency ---
 
@@ -83,9 +87,9 @@ def faiss_butina_cluster(
     #              recalculating it thousands of times inside the main loop.
     popcounts = np.unpackbits(fp_array, axis=1).sum(1).astype(np.int16)
 
-    # 2.1.2. `max_pop`: The largest pop-count found in the entire batch. This is used
-    #            to calculate a "worst-case" search radius later.
-    max_pop = popcounts.max()
+    # 2.1.2. `batch_max_pop`: The largest pop-count found in the entire batch. This is used
+    #                         to calculate a "worst-case" search radius later.
+    batch_max_pop = int(popcounts.max())
 
     # 2.2. `clusters`: The final list that will store the identified clusters.
     clusters: list[tuple[int, ...]] = []
@@ -103,20 +107,25 @@ def faiss_butina_cluster(
 
     # 3.1. Iterate through every fingerprint to in mini-batches of size `BATCH_Q` to select
     # potential cluster centroids.
-    for start in range(0, n_fingerprints, BATCH_Q):
+    for start in range(0, n_fingerprints, FAISS_QUERY_BATCH):
         # 3.1.1. Calculate end of current batch of fingerprints
-        end = min(start + BATCH_Q, n_fingerprints)
-        batch_pops = popcounts[start:end]
+        end = min(start + FAISS_QUERY_BATCH, n_fingerprints)
+        mini_batch_pop = popcounts[start:end]
 
-        # 3.1.2. `guess_radius`: A dynamically calculated and deliberately oversized Hamming
-        #                 distance. To guarantee we don't miss any neighbors, we calculate
-        #                 this "worst-case" radius assuming the neighbor has the largest
-        #                 possible pop-count in the dataset (max_pop).
-        guess_radius = int(coeff * (int(batch_pops.max()) + max_pop))
+        # 3.1.2. `mini_batch_max_pop`: The largest pop-count found in the current mini-batch. This is used
+        #                              to calculate a "worst-case" search radius later.
+        mini_batch_max_pop = int(mini_batch_pop.max())
+
+
+        # 3.1.3. `guess_radius`: A dynamically calculated and deliberately oversized Hamming
+        #                        distance. To guarantee we don't miss any neighbors, we calculate
+        #                        this "worst-case" radius assuming the neighbor has the largest
+        #                        possible pop-count in the dataset (max_pop).
+        guess_radius = int(coeff * (mini_batch_max_pop + batch_max_pop))
 
         # --- Fast, "Generous" Search with Faiss ---
 
-        # 3.1.3. Perform a single, fast search for all queries in the mini-batch.
+        # 3.1.4. Perform a single, fast search for all queries in the mini-batch.
         if gpu_index is not None:
             # Use the GPU k-NN emulation + CPU fallback strategy for maximum speed if GPU
             # is available
@@ -195,6 +204,207 @@ def faiss_butina_cluster(
         return clusters
 
 
+def consolidate_representatives(
+    fp_uint8: np.ndarray,                  # (N, nbytes) uint8 packed 1024-bit fps
+    smiles: List[str],                     # parallel list of SMILES (len N)
+    tanimoto_cutoff: float,
+    selector: str = "first",               # "first" | "max_pop" | custom via selector_fn
+    selector_fn: Optional[Callable[[List[int], np.ndarray], int]] = None,
+    batch_q: int = FAISS_QUERY_BATCH,
+    gpu_k: int = 2048
+) -> Tuple[List[str], np.ndarray]:
+    """
+    One global pass to merge near-duplicates across *all* batches using union–find.
+    Uses the same prefilter + exact Tanimoto verification scheme as faiss_butina_cluster().
+    Returns the deduplicated SMILES list and the kept indices (into fp_uint8/smiles).
+    """
+    assert fp_uint8.dtype == np.uint8 and fp_uint8.ndim == 2
+
+    # --- 1. Initialization ---
+
+    # 1.1. `n_fingerprints`: The total number of molecules in the set.
+    # 1.2. `n_bytes`: The number of bytes per fingerprint (e.g., 128 for a 1024-bit fp).
+    n_fingerprints, n_bytes = fp_uint8.shape
+
+    # 1.3. `dimension`: The total number of bits in each fingerprint (e.g., 1024).
+    dimension = n_bytes * 8
+
+    # 1.4/1.5. Prepare FAISS indices (mirror the pattern from faiss_butina_cluster()).
+    # GPU path: database on GPU; CPU fallback provided as NumPy table to the contrib helper.
+    gpu_index = None
+    if faiss.get_num_gpus() > 0:
+        res = faiss.StandardGpuResources()
+        gpu_index = faiss.GpuIndexBinaryFlat(res, dimension)
+        gpu_index.add(fp_uint8) # Add the fingerprints to the GPU index
+        cpu_index = fp_uint8    # NumPy fallback for range_search_gpu()
+    else:
+        cpu_index = faiss.IndexBinaryFlat(dimension)
+        cpu_index.add(fp_uint8)
+
+    # --- 2. Pre-computation for Efficiency ---
+
+    # 2.1. Pre-compute pop-counts (number of 1-bits) once
+    # 2.1.1. `popcounts`: A NumPy array storing the number of "on" bits (1s) for every fingerprint.
+    popcounts = fast_popcounts_uint8(fp_uint8)
+
+    # 2.1.2. `batch_max_pop`: The largest pop-count found in the entire set (used for worst-case radius).
+    batch_max_pop = int(popcounts.max())
+
+    # 2.2. Union–find over all elements to build connected components under the cutoff.
+    uf = UnionFind(n_fingerprints)
+
+    # 2.3. `coeff`: Pre-calculated constant from the Tanimoto→Hamming bound:
+    #               d_max = (1-T)/(1+T) * (a+b)
+    coeff = (1.0 - tanimoto_cutoff) / (1.0 + tanimoto_cutoff)
+
+    # --- 3. Main Merge Loop (global pass) ---
+
+    # 3.1. Iterate through fingerprints in mini-batches of size `batch_q`
+    for start in range(0, n_fingerprints, batch_q):
+        # 3.1.1. Calculate end of current mini-batch
+        end = min(start + batch_q, n_fingerprints)
+        mini_batch_pop = popcounts[start:end]
+
+        # 3.1.2. `mini_batch_max_pop`: largest popcount in the current mini-batch
+        mini_batch_max_pop = int(mini_batch_pop.max())
+
+        # 3.1.3. `guess_radius`: generous Hamming radius (worst-case b = batch_max_pop)
+        guess_radius = int(coeff * (mini_batch_max_pop + batch_max_pop))
+
+        # --- Fast, "Generous" Search with Faiss ---
+
+        # 3.1.4. Perform a single range-search for all queries in the mini-batch
+        if gpu_index is not None:
+            # GPU k-NN emulation + CPU fallback (NumPy table) for exact range coverage
+            lims, dist, idx = range_search_gpu(
+                fp_uint8[start:end], # Queries
+                guess_radius,        # Radius
+                gpu_index,           # GPU index (database already added)
+                cpu_index,           # CPU fallback: the full NumPy table
+                gpu_k=gpu_k          # candidates per query on GPU
+            )
+        else:
+            lims, dist, idx = cpu_index.range_search(fp_uint8[start:end], guess_radius)
+
+        # --- 4. Verify and Union ---
+
+        # 4.1. Iterate over every query in the mini-batch
+        for fp_q in range(end - start):
+            # 4.1.1. `fp_idx`: global index of the current query fingerprint
+            fp_idx = start + fp_q
+
+            # 4.1.2. `a`: popcount of the current query
+            a = int(popcounts[fp_idx])
+
+            # `q_l, q_r`: slice of results for this query within `dist` and `idx`
+            q_l, q_r = lims[fp_q], lims[fp_q + 1]
+
+            # 4.1.3. Exact Tanimoto verification and union
+            for j, d in zip(idx[q_l:q_r], dist[q_l:q_r]):
+                if j == fp_idx:
+                    continue  # Skip self
+                b = int(popcounts[j])
+
+                # exact intersection / Tanimoto via Hamming
+                c = (a + b - d) // 2
+                denom = a + b - c
+                if denom <= 0:
+                    continue
+                if c / denom >= tanimoto_cutoff:
+                    uf.union(fp_idx, j)
+
+    # --- 5. Extract components and choose representatives ---
+
+    components = uf.components()  # List[List[int]]
+
+    if selector_fn is not None:
+        keep_idx = [selector_fn(comp, popcounts) for comp in components]
+    elif selector == "max_pop":
+        keep_idx = [max(comp, key=lambda k: popcounts[k]) for comp in components]
+    else:
+        keep_idx = [comp[0] for comp in components]
+
+    keep_idx = np.asarray(keep_idx, dtype=np.int64)
+    kept_smiles = [smiles[i] for i in keep_idx.tolist()]
+
+    return kept_smiles, keep_idx
+
+
+def hamming_radius_from_tanimoto(t: float, a_max: int, b_max: int) -> int:
+    """
+    For binary fingerprints with popcounts a (query) and b (candidate),
+    the largest Hamming distance D that can still yield Tanimoto >= T is:
+        D_max = ((1 - T) / (1 + T)) * (a + b)
+    """
+    coeff = (1.0 - t) / (1.0 + t)
+    return int(coeff * (a_max + b_max))
+
+class UnionFind:
+    def __init__(self, n: int):
+        self.parent = np.arange(n, dtype=np.int64)
+        self.size = np.ones(n, dtype=np.int32)
+
+    def find(self, x: int) -> int:
+        while self.parent[x] != x:
+            self.parent[x] = self.parent[self.parent[x]]
+            x = self.parent[x]
+        return x
+
+    def union(self, a: int, b: int) -> None:
+        ra, rb = self.find(a), self.find(b)
+        if ra == rb:
+            return
+        if self.size[ra] < self.size[rb]:
+            ra, rb = rb, ra
+        self.parent[rb] = ra
+        self.size[ra] += self.size[rb]
+
+    def components(self) -> List[List[int]]:
+        roots = {}
+        for i in range(self.parent.shape[0]):
+            r = self.find(i)
+            roots.setdefault(r, []).append(i)
+        return list(roots.values())
+
+
+def fast_popcounts_uint8(fp_uint8: np.ndarray) -> np.ndarray:
+    """
+    fp_uint8: (N, nbytes) uint8, packed bits (e.g., 128 bytes for 1024-bit ECFP4)
+    returns:  (N,) uint16, number of 1-bits per row
+    """
+    # map each byte to its popcount, then sum across bytes
+    # keep dtype small: max per row is 1024, so uint16 is enough
+    return _BYTE_POPCOUNT[fp_uint8].sum(axis=1, dtype=np.uint16)
+
+
+def true_medoid_idx(
+    cluster_idx: List[int],
+    fp_uint8: np.ndarray,
+    popcounts: np.ndarray
+) -> int:
+    """
+    Return the index (into fp_uint8) of the true medoid:
+    the member with the highest mean Tanimoto to all others.
+    Only called for small clusters (<= 256) — O(|C|^2).
+    """
+    if len(cluster_idx) == 1:
+        # Singleton cluster – The only member is its own medoid
+        return cluster_idx[0]
+
+    idx_arr = np.asarray(cluster_idx, dtype=int)  # (C,)
+    sub = fp_uint8[idx_arr]  # (C, 128) uint8
+    inter = np.bitwise_and(
+        sub[:, None, :],  # (C, 1, 128)
+        sub[None, :, :]  # (1, C, 128)
+    ).sum(2, dtype=np.uint16)  # (C, C) intersection popcount
+
+    pc = popcounts[idx_arr].astype(np.int32) # (C, 1)
+    denom = pc[:, None] + pc[None, :] - inter # (C, C)
+    sims = inter / denom  # (C, C) Tanimoto
+
+    return cluster_idx[int(sims.mean(1).argmax())]
+
+
 def butina_cluster(fingerprints: List[Any], tanimoto_cutoff: float) -> List[Tuple[int, ...]]:
     """
     Performs a memory-efficient Butina clustering on a list of fingerprints.
@@ -235,159 +445,3 @@ def butina_cluster(fingerprints: List[Any], tanimoto_cutoff: float) -> List[Tupl
     )
 
     return clusters
-
-
-def true_medoid_idx(
-    cluster_idx: List[int],
-    fp_uint8: np.ndarray,
-    popcounts: np.ndarray
-) -> int:
-    """
-    Return the index (into fp_uint8) of the true medoid:
-    the member with the highest mean Tanimoto to all others.
-    Only called for small clusters (<= 256) — O(|C|^2).
-    """
-    if len(cluster_idx) == 1:
-        # singleton cluster – the only member is trivially its own medoid
-        return cluster_idx[0]
-
-    idx_arr = np.asarray(cluster_idx, dtype=int)  # (C,)
-    sub = fp_uint8[idx_arr]  # (C, 128) uint8
-    inter = np.bitwise_and(
-        sub[:, None, :],  # (C, 1, 128)
-        sub[None, :, :]  # (1, C, 128)
-    ).sum(2, dtype=np.uint16)  # (C, C) intersection popcount
-
-    pc = popcounts[idx_arr].astype(np.int32) # (C, 1)
-    denom = pc[:, None] + pc[None, :] - inter # (C, C)
-    sims = inter / denom  # (C, C) Tanimoto
-
-    return cluster_idx[int(sims.mean(1).argmax())]
-
-
-def hamming_radius_from_tanimoto(T: float, a: int, b: int) -> int:
-    """
-    For binary fingerprints with popcounts a (query) and b (candidate),
-    the largest Hamming distance D that can still yield Tanimoto >= T is:
-        D_max = ((1 - T) / (1 + T)) * (a + b)
-    We return floor(D_max) as an int radius (Faiss expects int for binary).
-    """
-    return int(((1.0 - T) / (1.0 + T)) * (a + b))
-
-
-class UnionFind:
-    def __init__(self, n: int):
-        self.parent = np.arange(n, dtype=np.int64)
-        self.size = np.ones(n, dtype=np.int32)
-
-    def find(self, x: int) -> int:
-        while self.parent[x] != x:
-            self.parent[x] = self.parent[self.parent[x]]
-            x = self.parent[x]
-        return x
-
-    def union(self, a: int, b: int) -> None:
-        ra, rb = self.find(a), self.find(b)
-        if ra == rb:
-            return
-        if self.size[ra] < self.size[rb]:
-            ra, rb = rb, ra
-        self.parent[rb] = ra
-        self.size[ra] += self.size[rb]
-
-    def components(self) -> List[List[int]]:
-        roots = {}
-        for i in range(self.parent.shape[0]):
-            r = self.find(i)
-            roots.setdefault(r, []).append(i)
-        return list(roots.values())
-
-
-def consolidate_representatives(
-    fp_uint8: np.ndarray,                 # (N, nbytes) uint8 packed 1024-bit fps
-    smiles: List[str],                    # parallel list of SMILES (len N)
-    tanimoto_cutoff: float,
-    selector: str = "first",              # "first" | "max_pop" | custom via selector_fn
-    selector_fn: Optional[Callable[[List[int], np.ndarray], int]] = None,
-    batch_q: int = BATCH_Q,
-    gpu_k: int = 2048
-) -> Tuple[List[str], np.ndarray]:
-    """
-    One global pass to merge near-duplicates across batches using union-find.
-    - Uses FAISS for a generous Hamming prefilter (GPU if available).
-    - Verifies with exact Tanimoto computed from popcounts + Hamming.
-    - Returns the deduplicated SMILES list and indices kept.
-    """
-    assert fp_uint8.dtype == np.uint8 and fp_uint8.ndim == 2
-    N, nbytes = fp_uint8.shape
-    dim = nbytes * 8
-
-    # Precompute popcounts once
-    pop = np.unpackbits(fp_uint8, axis=1).sum(1).astype(np.int16)  # (N,)
-    b_max = int(pop.max())
-
-    uf = UnionFind(N)
-
-    # Prepare FAISS indices.
-    # GPU path: keep all data on GPU index; give CPU fallback to contrib helper as numpy
-    gpu_index = None
-    if faiss.get_num_gpus() > 0:
-        res = faiss.StandardGpuResources()
-        gpu_index = faiss.GpuIndexBinaryFlat(res, dim)
-        gpu_index.add(fp_uint8)  # database on GPU
-
-    # CPU index only needed if no GPU available (or as fallback inside contrib helper via numpy)
-    cpu_index = None
-    if gpu_index is None:
-        cpu_index = faiss.IndexBinaryFlat(dim)
-        cpu_index.add(fp_uint8)
-
-    # Batch over queries to avoid Python overhead
-    for start in range(0, N, batch_q):
-        end = min(start + batch_q, N)
-        batch = fp_uint8[start:end]
-
-        # tight-but-safe batch radius: use per-batch max(a) vs global max(b)
-        a_max = int(pop[start:end].max())
-        r = hamming_radius_from_tanimoto(tanimoto_cutoff, a_max, b_max)
-
-        if gpu_index is not None:
-            # Pass the whole DB as numpy for CPU fallback; helper will build a flat CPU index on demand
-            lims, D, I = range_search_gpu(batch, r, gpu_index, fp_uint8, gpu_k=gpu_k)
-        else:
-            lims, D, I = cpu_index.range_search(batch, r)
-
-        # Verify and union
-        for q in range(end - start):
-            i = start + q
-            ql, qr = lims[q], lims[q + 1]
-            a = int(pop[i])
-            # leader itself might appear; skip self-pairs
-            for j, d in zip(I[ql:qr], D[ql:qr]):
-                if j == i:
-                    continue
-                b = int(pop[j])
-                # exact intersection / Tanimoto from Hamming
-                c = (a + b - d) // 2
-                denom = a + b - c
-                if denom <= 0:
-                    continue
-                if c / denom >= tanimoto_cutoff:
-                    uf.union(i, j)
-
-    comps = uf.components()
-
-    # Choose representative per component
-    if selector_fn is not None:
-        keep_idx = [selector_fn(comp, pop) for comp in comps]
-    elif selector == "max_pop":
-        keep_idx = [max(comp, key=lambda k: pop[k]) for comp in comps]
-    elif selector == "first":
-        keep_idx = [comp[0] for comp in comps]
-    else:
-        # default to first
-        keep_idx = [comp[0] for comp in comps]
-
-    keep_idx = np.array(keep_idx, dtype=np.int64)
-    kept_smiles = [smiles[i] for i in keep_idx.tolist()]
-    return kept_smiles, keep_idx

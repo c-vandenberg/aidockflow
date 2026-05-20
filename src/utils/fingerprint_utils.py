@@ -62,12 +62,12 @@ def iter_fp_batches(smiles_iter: Iterable[str], batch_size: int = 1_000_000, max
     for s in smiles_iter:
         buf.append(s)
         if len(buf) >= batch_size:
-            chunk_smiles, fp_uint8 = compute_fp_batch(buf, max_workers=max_workers)
+            batch_smiles, fp_uint8 = compute_fp_batch(buf, max_workers=max_workers)
             if fp_uint8 is not None:
-                yield chunk_smiles, fp_uint8
+                yield batch_smiles, fp_uint8
             buf.clear()
 
     if buf:
-        chunk_smiles, fp_uint8 = compute_fp_batch(buf, max_workers=max_workers)
+        batch_smiles, fp_uint8 = compute_fp_batch(buf, max_workers=max_workers)
         if fp_uint8 is not None:
-            yield chunk_smiles, fp_uint8
+            yield batch_smiles, fp_uint8
